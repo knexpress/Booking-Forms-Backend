@@ -1,0 +1,27 @@
+# Python files (not needed for Node.js deployment)
+venv/
+*.py
+requirements.txt
+start-ocr-server.*
+
+# Development files
+node_modules/
+.env.local
+.env.development
+
+# Old/unused files (already deleted, but keep for safety)
+server-old.js
+card-detection-helpers.js
+eng.traineddata
+
+# Documentation (keep only essential)
+DEPLOYMENT.md
+SETUP_DEEPSEEK_OCR.md
+TROUBLESHOOTING.md
+OCR_SYSTEM_README.md
+OCR_API_DOCUMENTATION.md
+CARD_DETECTION_GUIDE.md
+
+# Empty directories
+api/
+

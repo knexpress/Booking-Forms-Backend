@@ -8,6 +8,7 @@ import express from 'express'
 import cors from 'cors'
 import { MongoClient } from 'mongodb'
 import dotenv from 'dotenv'
+import { processEmiratesID } from './services/longcat-ocr.js'
 
 // Load environment variables
 dotenv.config()
@@ -48,13 +49,26 @@ async function connectToDatabase() {
   }
 }
 
-// Middleware
+// Middleware - CORS configuration
 app.use(cors({
-  origin: '*', // In production, replace with your frontend URL
-  credentials: true
+  origin: '*', // Allow all origins (for development)
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Content-Length', 'X-Request-Id']
 }))
+// Note: CORS middleware automatically handles OPTIONS preflight requests
+
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
+
+// Request logging middleware
+app.use((req, res, next) => {
+  console.log(`\n📥 ${req.method} ${req.path}`)
+  console.log(`   Origin: ${req.headers.origin || 'none'}`)
+  console.log(`   User-Agent: ${req.headers['user-agent']?.substring(0, 50) || 'none'}...`)
+  next()
+})
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -73,7 +87,8 @@ app.get('/api', (req, res) => {
     endpoints: {
       health: 'GET /health',
       bookings: 'POST /api/bookings',
-      processImage: 'POST /api/process-image'
+      processImage: 'POST /api/process-image',
+      ocr: 'POST /api/ocr'
     }
   })
 })
@@ -158,6 +173,129 @@ app.post('/api/process-image', async (req, res) => {
     return res.status(500).json({
       success: false,
       error: 'Failed to process image',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    })
+  }
+})
+
+// OCR endpoint for Emirates ID detection using OpenAI Vision API
+app.post('/api/ocr', async (req, res) => {
+  const requestId = Date.now().toString(36)
+  const timestamp = new Date().toISOString()
+  
+  console.log('\n🔵 ===== OCR REQUEST =====')
+  console.log(`📥 Request ID: ${requestId}`)
+  console.log(`⏰ Timestamp: ${timestamp}`)
+  
+  try {
+    const { image } = req.body
+    
+    if (!image) {
+      console.log(`❌ Validation failed: Image is required`)
+      return res.status(400).json({
+        success: false,
+        error: 'Image is required (base64 string)',
+        requestId: requestId
+      })
+    }
+
+    console.log(`📸 Image received (${image.length} characters)`)
+    
+    // Process the image for Emirates ID identification
+    const result = await processEmiratesID(image)
+    
+    if (!result.success) {
+      console.log(`❌ OCR processing failed: ${result.error}`)
+      return res.status(500).json({
+        success: false,
+        error: result.error || 'Failed to process image',
+        requestId: requestId
+      })
+    }
+
+    const { identification, extractedText, requiresBackSide } = result
+
+    console.log(`\n📝 Extracted Text Preview (first 500 chars):`)
+    console.log(`   ${extractedText.substring(0, 500)}${extractedText.length > 500 ? '...' : ''}`)
+    
+    console.log(`\n🔍 Identification Result:`)
+    console.log(`   - Is Emirates ID: ${identification.isEmiratesID}`)
+    console.log(`   - Side: ${identification.side}`)
+    console.log(`   - Confidence: ${(identification.confidence * 100).toFixed(0)}%`)
+    console.log(`   - Reason: ${identification.reason}`)
+    console.log(`   - Requires Back Side: ${requiresBackSide}`)
+
+    // If it's not an Emirates ID, return false
+    if (!identification.isEmiratesID) {
+      console.log(`❌ Not an Emirates ID - returning false`)
+      return res.status(200).json({
+        success: true,
+        isEmiratesID: false,
+        message: 'Image is not an Emirates ID',
+        identification: identification,
+        requestId: requestId,
+        timestamp: timestamp
+      })
+    }
+
+    // If it's the front side, indicate that back side is required
+    if (requiresBackSide) {
+      console.log(`✅ Front side detected - back side required`)
+      return res.status(200).json({
+        success: true,
+        isEmiratesID: true,
+        side: 'front',
+        requiresBackSide: true,
+        message: 'Emirates ID front side detected. Please send the back side image.',
+        identification: identification,
+        extractedText: extractedText.substring(0, 500), // Return first 500 chars for debugging
+        requestId: requestId,
+        timestamp: timestamp
+      })
+    }
+
+    // If it's the back side
+    if (identification.side === 'back') {
+      console.log(`✅ Back side detected`)
+      return res.status(200).json({
+        success: true,
+        isEmiratesID: true,
+        side: 'back',
+        requiresBackSide: false,
+        message: 'Emirates ID back side detected.',
+        identification: identification,
+        extractedText: extractedText.substring(0, 500), // Return first 500 chars for debugging
+        requestId: requestId,
+        timestamp: timestamp
+      })
+    }
+
+    // Unknown side but confirmed Emirates ID
+    console.log(`✅ Emirates ID detected but side unknown`)
+    return res.status(200).json({
+      success: true,
+      isEmiratesID: true,
+      side: identification.side,
+      requiresBackSide: false,
+      message: 'Emirates ID detected but side could not be determined.',
+      identification: identification,
+      extractedText: extractedText.substring(0, 500),
+      requestId: requestId,
+      timestamp: timestamp
+    })
+
+  } catch (error) {
+    console.error('\n❌❌❌ OCR ERROR ❌❌❌')
+    console.error(`🔴 Request ID ${requestId} - Error occurred`)
+    console.error(`   Error Type: ${error.constructor.name}`)
+    console.error(`   Error Message: ${error.message}`)
+    console.error(`   Error Stack:`, error.stack)
+    console.error(`🔴 ===== ERROR END =====\n`)
+    
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to process OCR request',
+      requestId: requestId,
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     })
   }
@@ -602,17 +740,20 @@ app.use((error, req, res, next) => {
   })
 })
 
-// Start server
-app.listen(PORT, () => {
-  console.log('\n🚀 KN Express Backend API')
-  console.log(`📍 Server: http://localhost:${PORT}`)
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`)
-  console.log(`\n📡 Endpoints:`)
-  console.log(`   GET  /health          - Health check`)
-  console.log(`   GET  /api             - API info`)
-  console.log(`   POST /api/bookings    - Submit booking`)
-  console.log(`\n✅ Server ready and listening...`)
-})
+// Start server (only if not in Vercel serverless environment)
+if (process.env.VERCEL !== '1') {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log('\n🚀 KN Express Backend API')
+    console.log(`📍 Server: http://localhost:${PORT}`)
+    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`)
+    console.log(`\n📡 Endpoints:`)
+    console.log(`   GET  /health          - Health check`)
+    console.log(`   GET  /api             - API info`)
+    console.log(`   POST /api/bookings    - Submit booking`)
+    console.log(`   POST /api/ocr         - OCR for Emirates ID detection`)
+    console.log(`\n✅ Server ready and listening on 0.0.0.0:${PORT}`)
+  })
+}
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
@@ -633,4 +774,5 @@ process.on('SIGINT', async () => {
   process.exit(0)
 })
 
+// Export app for Vercel serverless functions
 export default app

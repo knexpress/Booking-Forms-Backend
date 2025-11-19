@@ -1,6 +1,26 @@
 # KN Express Backend
 
-Express + MongoDB API server.
+Express + MongoDB API server with OpenAI Vision OCR for Emirates ID detection.
+
+## 🚀 Quick Start
+
+```bash
+# Install dependencies
+npm install
+
+# Create .env file (see .env.example)
+cp .env.example .env
+
+# Start server
+npm start
+```
+
+## 📡 API Endpoints
+
+- `GET /health` - Health check
+- `GET /api` - API information
+- `POST /api/bookings` - Submit booking
+- `POST /api/ocr` - OCR for Emirates ID detection (uses OpenAI Vision)
 
 ## 🚀 Deploy to Render
 
