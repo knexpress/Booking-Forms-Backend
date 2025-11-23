@@ -361,6 +361,11 @@ app.post('/api/bookings', async (req, res) => {
       console.log(`   - Address Line 1: ${bookingData.sender.addressLine1 || 'missing'}`)
       console.log(`   - Phone: ${bookingData.sender.phoneNumber || 'missing'}`)
       console.log(`   - Dial Code (sent): ${bookingData.sender.dialCode || 'not provided'}`)
+      if (bookingData.sender.formFillerLatitude !== undefined && bookingData.sender.formFillerLongitude !== undefined) {
+        console.log(`   - Form Filler Location: ${bookingData.sender.formFillerLatitude}, ${bookingData.sender.formFillerLongitude}`)
+      } else {
+        console.log(`   - Form Filler Location: not provided (user may have denied permission)`)
+      }
     }
     
     if (bookingData.receiver) {
@@ -475,6 +480,55 @@ app.post('/api/bookings', async (req, res) => {
       })
     }
 
+    // Validate form filler location coordinates (optional, but if provided must be valid and both together)
+    if (bookingData.sender.formFillerLatitude !== undefined || bookingData.sender.formFillerLongitude !== undefined) {
+      // Check if both are provided together
+      if (bookingData.sender.formFillerLatitude === undefined || bookingData.sender.formFillerLongitude === undefined) {
+        console.log(`\n❌ VALIDATION ERROR: Form filler location coordinates must be provided together`)
+        console.log(`   formFillerLatitude: ${bookingData.sender.formFillerLatitude !== undefined ? 'provided' : 'missing'}`)
+        console.log(`   formFillerLongitude: ${bookingData.sender.formFillerLongitude !== undefined ? 'provided' : 'missing'}`)
+        console.log(`🔴 Request ID ${requestId} - Validation failed: Both latitude and longitude must be provided together`)
+        
+        return res.status(400).json({
+          success: false,
+          error: 'Both formFillerLatitude and formFillerLongitude must be provided together',
+          requestId: requestId
+        })
+      }
+
+      // Validate latitude range (-90 to 90)
+      if (typeof bookingData.sender.formFillerLatitude !== 'number' || 
+          bookingData.sender.formFillerLatitude < -90 || 
+          bookingData.sender.formFillerLatitude > 90) {
+        console.log(`\n❌ VALIDATION ERROR: Invalid form filler latitude`)
+        console.log(`   Latitude: ${bookingData.sender.formFillerLatitude}`)
+        console.log(`   Type: ${typeof bookingData.sender.formFillerLatitude}`)
+        console.log(`🔴 Request ID ${requestId} - Validation failed: Latitude must be a number between -90 and 90`)
+        
+        return res.status(400).json({
+          success: false,
+          error: 'formFillerLatitude must be a number between -90 and 90',
+          requestId: requestId
+        })
+      }
+
+      // Validate longitude range (-180 to 180)
+      if (typeof bookingData.sender.formFillerLongitude !== 'number' || 
+          bookingData.sender.formFillerLongitude < -180 || 
+          bookingData.sender.formFillerLongitude > 180) {
+        console.log(`\n❌ VALIDATION ERROR: Invalid form filler longitude`)
+        console.log(`   Longitude: ${bookingData.sender.formFillerLongitude}`)
+        console.log(`   Type: ${typeof bookingData.sender.formFillerLongitude}`)
+        console.log(`🔴 Request ID ${requestId} - Validation failed: Longitude must be a number between -180 and 180`)
+        
+        return res.status(400).json({
+          success: false,
+          error: 'formFillerLongitude must be a number between -180 and 180',
+          requestId: requestId
+        })
+      }
+    }
+
     // Validate items
     if (!Array.isArray(bookingData.items) || bookingData.items.length === 0) {
       console.log(`\n❌ VALIDATION ERROR: Items validation failed`)
@@ -570,7 +624,13 @@ app.post('/api/bookings', async (req, res) => {
         contactNo: bookingData.sender.contactNo || '',
         
         // Delivery Options
-        deliveryOption: bookingData.sender.deliveryOption || 'warehouse'
+        deliveryOption: bookingData.sender.deliveryOption || 'warehouse',
+        
+        // Form Filler Location (optional - from browser geolocation)
+        ...(bookingData.sender.formFillerLatitude !== undefined && bookingData.sender.formFillerLongitude !== undefined ? {
+          formFillerLatitude: bookingData.sender.formFillerLatitude,
+          formFillerLongitude: bookingData.sender.formFillerLongitude
+        } : {})
       },
       
       // Receiver Details - Complete breakdown
