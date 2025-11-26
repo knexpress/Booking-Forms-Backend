@@ -251,10 +251,13 @@ app.post('/api/ocr', async (req, res) => {
       })
     }
 
-    // Name verification if firstName and lastName are provided
+    // Name verification ONLY for front side (back side doesn't have name field)
     let nameVerification = null
-    if (firstName && lastName && typeof firstName === 'string' && typeof lastName === 'string' && firstName.trim() && lastName.trim() && extractedName) {
-      console.log(`\n🔍 Starting name verification...`)
+    const isFrontSide = identification.side === 'front' || requiresBackSide
+    
+    // Only perform name verification for front side
+    if (isFrontSide && firstName && lastName && typeof firstName === 'string' && typeof lastName === 'string' && firstName.trim() && lastName.trim() && extractedName) {
+      console.log(`\n🔍 Starting name verification (FRONT SIDE)...`)
       console.log(`   Extracted Name: ${extractedName}`)
       console.log(`   Provided First Name: ${firstName}`)
       console.log(`   Provided Last Name: ${lastName}`)
@@ -304,14 +307,17 @@ app.post('/api/ocr', async (req, res) => {
           identification: identification
         })
       }
-    } else if (firstName && lastName && !extractedName) {
-      console.log(`⚠️  Name verification requested but could not extract name from EID`)
+    } else if (isFrontSide && firstName && lastName && typeof firstName === 'string' && typeof lastName === 'string' && firstName.trim() && lastName.trim() && !extractedName) {
+      console.log(`⚠️  Name verification requested for front side but could not extract name from EID`)
       return res.status(400).json({
         success: false,
         error: 'Could not extract name from Emirates ID. Please ensure the image is clear and the name is visible.',
         requestId: requestId,
         identification: identification
       })
+    } else if (!isFrontSide && firstName && lastName) {
+      console.log(`ℹ️  Back side detected - skipping name verification (back side doesn't contain name field)`)
+      // For back side, we just verify it's an Emirates ID, no name comparison needed
     }
 
     // If it's the front side, indicate that back side is required
