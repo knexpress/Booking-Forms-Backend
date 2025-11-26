@@ -192,6 +192,7 @@ export async function processEmiratesID(imageBase64) {
     return {
       success: true,
       extractedText: openaiResult.text,
+      extractedName: openaiResult.extractedName || null, // Pass through extracted name
       identification: identification,
       requiresBackSide: identification.isEmiratesID && identification.side === 'front'
     }
@@ -200,6 +201,7 @@ export async function processEmiratesID(imageBase64) {
     return {
       success: false,
       error: error.message,
+      extractedName: null,
       identification: {
         isEmiratesID: false,
         side: 'unknown',

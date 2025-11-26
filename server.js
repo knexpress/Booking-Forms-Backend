@@ -9,6 +9,7 @@ import cors from 'cors'
 import { MongoClient } from 'mongodb'
 import dotenv from 'dotenv'
 import { processEmiratesID } from './services/longcat-ocr.js'
+import { extractNameFromText, normalizeName, compareNames } from './services/openai-ocr.js'
 
 // Load environment variables
 dotenv.config()
@@ -188,7 +189,7 @@ app.post('/api/ocr', async (req, res) => {
   console.log(`⏰ Timestamp: ${timestamp}`)
   
   try {
-    const { image } = req.body
+    const { image, firstName, lastName } = req.body
     
     if (!image) {
       console.log(`❌ Validation failed: Image is required`)
@@ -200,6 +201,11 @@ app.post('/api/ocr', async (req, res) => {
     }
 
     console.log(`📸 Image received (${image.length} characters)`)
+    if (firstName && lastName) {
+      console.log(`👤 Name provided for verification:`)
+      console.log(`   First Name: ${firstName}`)
+      console.log(`   Last Name: ${lastName}`)
+    }
     
     // Process the image for Emirates ID identification
     const result = await processEmiratesID(image)
@@ -213,10 +219,14 @@ app.post('/api/ocr', async (req, res) => {
       })
     }
 
-    const { identification, extractedText, requiresBackSide } = result
+    const { identification, extractedText, extractedName, requiresBackSide } = result
 
     console.log(`\n📝 Extracted Text Preview (first 500 chars):`)
-    console.log(`   ${extractedText.substring(0, 500)}${extractedText.length > 500 ? '...' : ''}`)
+    if (extractedText && typeof extractedText === 'string') {
+      console.log(`   ${extractedText.substring(0, 500)}${extractedText.length > 500 ? '...' : ''}`)
+    } else {
+      console.log(`   (No text extracted)`)
+    }
     
     console.log(`\n🔍 Identification Result:`)
     console.log(`   - Is Emirates ID: ${identification.isEmiratesID}`)
@@ -224,6 +234,9 @@ app.post('/api/ocr', async (req, res) => {
     console.log(`   - Confidence: ${(identification.confidence * 100).toFixed(0)}%`)
     console.log(`   - Reason: ${identification.reason}`)
     console.log(`   - Requires Back Side: ${requiresBackSide}`)
+    if (extractedName) {
+      console.log(`   - Extracted Name: ${extractedName}`)
+    }
 
     // If it's not an Emirates ID, return false
     if (!identification.isEmiratesID) {
@@ -238,6 +251,69 @@ app.post('/api/ocr', async (req, res) => {
       })
     }
 
+    // Name verification if firstName and lastName are provided
+    let nameVerification = null
+    if (firstName && lastName && typeof firstName === 'string' && typeof lastName === 'string' && firstName.trim() && lastName.trim() && extractedName) {
+      console.log(`\n🔍 Starting name verification...`)
+      console.log(`   Extracted Name: ${extractedName}`)
+      console.log(`   Provided First Name: ${firstName}`)
+      console.log(`   Provided Last Name: ${lastName}`)
+      
+      // Normalize names for comparison
+      const normalizedExtracted = normalizeName(extractedName)
+      const normalizedFirst = normalizeName(firstName)
+      const normalizedLast = normalizeName(lastName)
+      
+      // Split extracted name into words
+      const extractedWords = normalizedExtracted.split(' ').filter(w => w.length > 0)
+      
+      // Check if first name appears in extracted name
+      const firstNameMatches = extractedWords.some(word => word === normalizedFirst)
+      
+      // Check if last name appears in extracted name
+      const lastNameMatches = extractedWords.some(word => word === normalizedLast)
+      
+      const nameMatch = firstNameMatches && lastNameMatches
+      
+      nameVerification = {
+        nameMatch: nameMatch,
+        extractedName: extractedName,
+        providedFirstName: firstName,
+        providedLastName: lastName,
+        firstNameFound: firstNameMatches,
+        lastNameFound: lastNameMatches,
+        message: nameMatch 
+          ? 'Name matches Emirates ID' 
+          : 'Name on Emirates ID does not match provided name'
+      }
+      
+      console.log(`   ✅ Name Verification Result:`)
+      console.log(`      - First Name Found: ${firstNameMatches}`)
+      console.log(`      - Last Name Found: ${lastNameMatches}`)
+      console.log(`      - Overall Match: ${nameMatch}`)
+      console.log(`      - Message: ${nameVerification.message}`)
+      
+      // If names don't match, reject the request
+      if (!nameMatch) {
+        console.log(`❌ Name verification failed - names do not match`)
+        return res.status(400).json({
+          success: false,
+          error: 'Name on Emirates ID does not match the provided name. Please ensure the Emirates ID belongs to the correct person.',
+          requestId: requestId,
+          nameVerification: nameVerification,
+          identification: identification
+        })
+      }
+    } else if (firstName && lastName && !extractedName) {
+      console.log(`⚠️  Name verification requested but could not extract name from EID`)
+      return res.status(400).json({
+        success: false,
+        error: 'Could not extract name from Emirates ID. Please ensure the image is clear and the name is visible.',
+        requestId: requestId,
+        identification: identification
+      })
+    }
+
     // If it's the front side, indicate that back side is required
     if (requiresBackSide) {
       console.log(`✅ Front side detected - back side required`)
@@ -249,6 +325,8 @@ app.post('/api/ocr', async (req, res) => {
         message: 'Emirates ID front side detected. Please send the back side image.',
         identification: identification,
         extractedText: extractedText.substring(0, 500), // Return first 500 chars for debugging
+        extractedName: extractedName || null,
+        nameVerification: nameVerification,
         requestId: requestId,
         timestamp: timestamp
       })
@@ -265,6 +343,8 @@ app.post('/api/ocr', async (req, res) => {
         message: 'Emirates ID back side detected.',
         identification: identification,
         extractedText: extractedText.substring(0, 500), // Return first 500 chars for debugging
+        extractedName: extractedName || null,
+        nameVerification: nameVerification,
         requestId: requestId,
         timestamp: timestamp
       })
@@ -280,6 +360,8 @@ app.post('/api/ocr', async (req, res) => {
       message: 'Emirates ID detected but side could not be determined.',
       identification: identification,
       extractedText: extractedText.substring(0, 500),
+      extractedName: extractedName || null,
+      nameVerification: nameVerification,
       requestId: requestId,
       timestamp: timestamp
     })
@@ -325,6 +407,11 @@ app.post('/api/bookings', async (req, res) => {
     console.log(`   - Terms accepted: ${bookingData.termsAccepted || false}`)
     console.log(`   - Has eidFrontImage: ${!!bookingData.eidFrontImage}`)
     console.log(`   - Has eidBackImage: ${!!bookingData.eidBackImage}`)
+    console.log(`   - Has eidFrontImageFirstName: ${!!bookingData.eidFrontImageFirstName}`)
+    console.log(`   - Has eidFrontImageLastName: ${!!bookingData.eidFrontImageLastName}`)
+    if (bookingData.eidFrontImageFirstName && bookingData.eidFrontImageLastName) {
+      console.log(`   - EID Name: ${bookingData.eidFrontImageFirstName} ${bookingData.eidFrontImageLastName}`)
+    }
     console.log(`   - Has philippinesIdFront: ${!!bookingData.philippinesIdFront}`)
     console.log(`   - Has philippinesIdBack: ${!!bookingData.philippinesIdBack}`)
     if (bookingData.philippinesIdFront) {
@@ -546,15 +633,174 @@ app.post('/api/bookings', async (req, res) => {
     
     console.log(`\n✅ All validations passed`)
 
-    // Generate unique reference number
-    const referenceNumber = 'KNX' + Date.now().toString(36).toUpperCase()
-    
-    // Determine route and set dial codes automatically
+    // Determine route and set dial codes automatically (needed for EID name logic)
     const service = bookingData.service || 'uae-to-pinas'
     const serviceLower = service.toLowerCase()
     const isPhilippinesToUAE = serviceLower.includes('philippines-to-uae') || 
                                 serviceLower.includes('pinas-to-uae') ||
                                 serviceLower.includes('ph-to-uae')
+    
+    // Frontend already sends the correct names in eidFrontImageFirstName and eidFrontImageLastName:
+    // - PH to UAE: These are the receiver's name (receiver has EID in UAE)
+    // - UAE to PH: These are the sender's name (sender has EID in UAE)
+    // So we use them directly for verification
+    let eidFirstName = bookingData.eidFrontImageFirstName || null
+    let eidLastName = bookingData.eidFrontImageLastName || null
+    
+    if (bookingData.eidFrontImage) {
+      if (isPhilippinesToUAE) {
+        console.log(`\n🇵🇭 PH to UAE Service: EID belongs to RECEIVER (person in UAE)`)
+        console.log(`   EID First Name (from frontend): ${eidFirstName || 'not provided'}`)
+        console.log(`   EID Last Name (from frontend): ${eidLastName || 'not provided'}`)
+        console.log(`   Receiver First Name: ${bookingData.receiver?.firstName || 'not provided'}`)
+        console.log(`   Receiver Last Name: ${bookingData.receiver?.lastName || 'not provided'}`)
+      } else {
+        console.log(`\n🇦🇪 UAE to PH Service: EID belongs to SENDER (person in UAE)`)
+        console.log(`   EID First Name (from frontend): ${eidFirstName || 'not provided'}`)
+        console.log(`   EID Last Name (from frontend): ${eidLastName || 'not provided'}`)
+        console.log(`   Sender First Name: ${bookingData.sender?.firstName || 'not provided'}`)
+        console.log(`   Sender Last Name: ${bookingData.sender?.lastName || 'not provided'}`)
+      }
+    }
+
+    // EID Name Verification (if EID front image is provided)
+    let eidVerification = null
+    if (bookingData.eidFrontImage && eidFirstName && eidLastName) {
+      console.log(`\n🔍 Starting EID name verification...`)
+      console.log(`   Using First Name: ${eidFirstName}`)
+      console.log(`   Using Last Name: ${eidLastName}`)
+      
+      try {
+        // Process Emirates ID to extract name
+        const eidResult = await processEmiratesID(bookingData.eidFrontImage)
+        
+        if (eidResult.success && eidResult.identification.isEmiratesID) {
+          // Get extracted name from OCR result or try to extract from text
+          let extractedName = eidResult.extractedName
+          
+          // If name not extracted by OpenAI, try to extract from text
+          if (!extractedName && eidResult.extractedText) {
+            extractedName = extractNameFromText(eidResult.extractedText)
+          }
+          
+          if (extractedName) {
+            console.log(`   Extracted Name from EID: ${extractedName}`)
+            
+            // Compare names
+            const matchResult = compareNames(
+              extractedName,
+              eidFirstName,
+              eidLastName
+            )
+            
+            eidVerification = {
+              isEmiratesId: true,
+              nameMatch: matchResult.matches,
+              nameMatchConfidence: matchResult.confidence,
+              extractedName: extractedName,
+              providedFirstName: eidFirstName,
+              providedLastName: eidLastName,
+              verificationMessage: matchResult.message
+            }
+            
+            console.log(`   ✅ Name Verification Result:`)
+            console.log(`      - Match: ${matchResult.matches}`)
+            console.log(`      - Confidence: ${(matchResult.confidence * 100).toFixed(0)}%`)
+            console.log(`      - Message: ${matchResult.message}`)
+          } else {
+            console.log(`   ⚠️  Could not extract name from Emirates ID`)
+            eidVerification = {
+              isEmiratesId: true,
+              nameMatch: null,
+              nameMatchConfidence: null,
+              extractedName: null,
+              providedFirstName: eidFirstName,
+              providedLastName: eidLastName,
+              verificationMessage: 'Could not extract name from Emirates ID. Manual review required.'
+            }
+          }
+        } else {
+          console.log(`   ⚠️  Image is not a valid Emirates ID`)
+          eidVerification = {
+            isEmiratesId: false,
+            nameMatch: false,
+            nameMatchConfidence: 0,
+            extractedName: null,
+            providedFirstName: eidFirstName,
+            providedLastName: eidLastName,
+            verificationMessage: 'Image is not a valid Emirates ID. Manual review required.'
+          }
+        }
+      } catch (verificationError) {
+        console.error(`   ❌ EID verification error: ${verificationError.message}`)
+        eidVerification = {
+          isEmiratesId: null,
+          nameMatch: null,
+          nameMatchConfidence: null,
+          extractedName: null,
+          providedFirstName: eidFirstName,
+          providedLastName: eidLastName,
+          verificationMessage: `Error verifying Emirates ID name: ${verificationError.message}`
+        }
+      }
+    } else if (bookingData.eidFrontImage) {
+      console.log(`\n⚠️  EID front image provided but name fields missing - skipping name verification`)
+      console.log(`   Service: ${service}`)
+      console.log(`   Is PH to UAE: ${isPhilippinesToUAE}`)
+      console.log(`   eidFrontImageFirstName: ${bookingData.eidFrontImageFirstName || 'missing'}`)
+      console.log(`   eidFrontImageLastName: ${bookingData.eidFrontImageLastName || 'missing'}`)
+      if (isPhilippinesToUAE) {
+        console.log(`   Receiver firstName: ${bookingData.receiver?.firstName || 'missing'}`)
+        console.log(`   Receiver lastName: ${bookingData.receiver?.lastName || 'missing'}`)
+      } else {
+        console.log(`   Sender firstName: ${bookingData.sender?.firstName || 'missing'}`)
+        console.log(`   Sender lastName: ${bookingData.sender?.lastName || 'missing'}`)
+      }
+    }
+
+    // Validate EID verification result - reject booking if names don't match
+    if (eidVerification) {
+      // Reject if EID is not valid
+      if (eidVerification.isEmiratesId === false) {
+        console.log(`\n❌ VALIDATION ERROR: Image is not a valid Emirates ID`)
+        console.log(`🔴 Request ID ${requestId} - EID validation failed`)
+        
+        return res.status(400).json({
+          success: false,
+          error: 'The provided image is not a valid Emirates ID. Please upload a valid Emirates ID front image.',
+          requestId: requestId,
+          eidVerification: eidVerification
+        })
+      }
+      
+      // Reject if names don't match (with low confidence threshold)
+      if (eidVerification.nameMatch === false && eidVerification.nameMatchConfidence !== null) {
+        const confidenceThreshold = 0.6 // Reject if confidence below 60%
+        
+        if (eidVerification.nameMatchConfidence < confidenceThreshold) {
+          console.log(`\n❌ VALIDATION ERROR: Name on Emirates ID does not match provided name`)
+          console.log(`   Extracted Name: ${eidVerification.extractedName}`)
+          console.log(`   Provided Name: ${eidVerification.providedFirstName} ${eidVerification.providedLastName}`)
+          console.log(`   Confidence: ${(eidVerification.nameMatchConfidence * 100).toFixed(0)}%`)
+          console.log(`🔴 Request ID ${requestId} - Name verification failed`)
+          
+          return res.status(400).json({
+            success: false,
+            error: 'Name on Emirates ID does not match the provided name. Please ensure the Emirates ID belongs to the correct person.',
+            requestId: requestId,
+            eidVerification: eidVerification
+          })
+        }
+      }
+      
+      // Warn if name match is null (could not extract name) but allow with manual review flag
+      if (eidVerification.nameMatch === null) {
+        console.log(`\n⚠️  WARNING: Could not verify name from Emirates ID - booking will proceed but requires manual review`)
+      }
+    }
+
+    // Generate unique reference number
+    const referenceNumber = 'KNX' + Date.now().toString(36).toUpperCase()
     
     // Set dial codes based on route
     const senderDialCode = isPhilippinesToUAE ? '+63' : '+971'
@@ -670,6 +916,9 @@ app.post('/api/bookings', async (req, res) => {
         // UAE EID documents (for UAE routes)
         eidFrontImage: bookingData.eidFrontImage || null,
         eidBackImage: bookingData.eidBackImage || null,
+        // EID Name fields (for verification) - store the names used for verification
+        ...(eidFirstName && { eidFrontImageFirstName: eidFirstName }),
+        ...(eidLastName && { eidFrontImageLastName: eidLastName }),
         // Philippines ID documents (for Philippines to UAE route)
         // Only include if they have values (MongoDB omits null fields)
         ...(bookingData.philippinesIdFront && { philippinesIdFront: bookingData.philippinesIdFront }),
@@ -678,6 +927,16 @@ app.post('/api/bookings', async (req, res) => {
         customerImage: bookingData.customerImage || null, // Single image for backward compatibility
         customerImages: bookingData.customerImages || (bookingData.customerImage ? [bookingData.customerImage] : []) // All face images
       },
+      
+      // EID Verification Results
+      ...(eidVerification ? {
+        eidVerification: {
+          nameMatch: eidVerification.nameMatch,
+          nameMatchConfidence: eidVerification.nameMatchConfidence,
+          extractedName: eidVerification.extractedName,
+          verificationMessage: eidVerification.verificationMessage
+        }
+      } : {}),
       
       // Additional Details (optional - frontend no longer collects this)
       additionalDetails: bookingData.additionalDetails ? {
@@ -753,14 +1012,21 @@ app.post('/api/bookings', async (req, res) => {
     console.log(`🔵 ===== END REQUEST =====\n`)
 
     // Return success response
-    return res.status(200).json({
+    const response = {
       success: true,
       referenceNumber: referenceNumber,
       bookingId: result.insertedId,
       message: 'Booking submitted successfully',
       timestamp: new Date().toISOString(),
       requestId: requestId
-    })
+    }
+    
+    // Include EID verification result if available
+    if (eidVerification) {
+      response.eidVerification = eidVerification
+    }
+    
+    return res.status(200).json(response)
 
   } catch (error) {
     console.error('\n❌❌❌ UNEXPECTED ERROR ❌❌❌')
