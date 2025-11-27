@@ -10,6 +10,7 @@ import { MongoClient } from 'mongodb'
 import dotenv from 'dotenv'
 import { processEmiratesID } from './services/longcat-ocr.js'
 import { extractNameFromText, normalizeName, compareNames } from './services/openai-ocr.js'
+import { generateOTP, sendOTP, getOTPExpiry, isOTPExpired, getOTPConfig } from './services/otp-service.js'
 
 // Load environment variables
 dotenv.config()
@@ -21,6 +22,7 @@ const PORT = process.env.PORT || 5000
 const MONGODB_URI = process.env.MONGODB_URI
 const DB_NAME = 'finance'
 const COLLECTION_NAME = 'bookings'
+const OTP_COLLECTION_NAME = 'otps'
 
 if (!MONGODB_URI) {
   console.error('❌ MONGODB_URI environment variable is not set')
@@ -89,7 +91,9 @@ app.get('/api', (req, res) => {
       health: 'GET /health',
       bookings: 'POST /api/bookings',
       processImage: 'POST /api/process-image',
-      ocr: 'POST /api/ocr'
+      ocr: 'POST /api/ocr',
+      otpGenerate: 'POST /api/otp/generate',
+      otpVerify: 'POST /api/otp/verify'
     }
   })
 })
@@ -389,6 +393,271 @@ app.post('/api/ocr', async (req, res) => {
   }
 })
 
+// OTP Endpoints
+// Generate and send OTP
+app.post('/api/otp/generate', async (req, res) => {
+  const requestId = Date.now().toString(36)
+  const timestamp = new Date().toISOString()
+  
+  console.log('\n🔵 ===== OTP GENERATE REQUEST =====')
+  console.log(`📥 Request ID: ${requestId}`)
+  console.log(`⏰ Timestamp: ${timestamp}`)
+  
+  try {
+    const { phoneNumber } = req.body
+    
+    // Validate phone number
+    if (!phoneNumber || typeof phoneNumber !== 'string' || !phoneNumber.trim()) {
+      console.log(`❌ Validation failed: Phone number is required`)
+      return res.status(400).json({
+        success: false,
+        error: 'Phone number is required',
+        requestId: requestId
+      })
+    }
+
+    // Format phone number
+    const formattedPhone = phoneNumber.trim().replace(/\s+/g, '')
+    if (!formattedPhone.startsWith('+')) {
+      return res.status(400).json({
+        success: false,
+        error: 'Phone number must include country code (e.g., +971501234567)',
+        requestId: requestId
+      })
+    }
+
+    console.log(`📱 Phone Number: ${formattedPhone}`)
+
+    // Generate OTP
+    const otp = generateOTP()
+    const expiryDate = getOTPExpiry()
+    const otpConfig = getOTPConfig()
+
+    console.log(`🔐 Generated OTP: ${otp}`)
+    console.log(`⏰ Expires at: ${expiryDate.toISOString()}`)
+
+    // Send OTP via SMS
+    let smsResult = null
+    try {
+      smsResult = await sendOTP(formattedPhone, otp)
+      console.log(`✅ OTP sent successfully`)
+    } catch (smsError) {
+      console.error(`❌ Failed to send OTP: ${smsError.message}`)
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to send OTP. Please try again.',
+        requestId: requestId,
+        details: process.env.NODE_ENV === 'development' ? smsError.message : undefined
+      })
+    }
+
+    // Store OTP in MongoDB
+    let client
+    try {
+      client = await connectToDatabase()
+      const db = client.db(DB_NAME)
+      const otpCollection = db.collection(OTP_COLLECTION_NAME)
+
+      // Delete any existing OTPs for this phone number
+      await otpCollection.deleteMany({ 
+        phoneNumber: formattedPhone,
+        verified: false 
+      })
+
+      // Store new OTP
+      const otpDocument = {
+        phoneNumber: formattedPhone,
+        otp: otp,
+        createdAt: new Date(),
+        expiresAt: expiryDate,
+        verified: false,
+        attempts: 0,
+        maxAttempts: otpConfig.maxAttempts
+      }
+
+      await otpCollection.insertOne(otpDocument)
+      console.log(`💾 OTP stored in database`)
+
+    } catch (dbError) {
+      console.error(`❌ Database error: ${dbError.message}`)
+      // Don't fail the request if DB fails, OTP was already sent
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'OTP sent successfully',
+      phoneNumber: formattedPhone,
+      expiresInMinutes: otpConfig.expiryMinutes,
+      maxAttempts: otpConfig.maxAttempts,
+      requestId: requestId,
+      timestamp: timestamp
+    })
+
+  } catch (error) {
+    console.error('\n❌❌❌ OTP GENERATE ERROR ❌❌❌')
+    console.error(`🔴 Request ID ${requestId} - Error occurred`)
+    console.error(`   Error Type: ${error.constructor.name}`)
+    console.error(`   Error Message: ${error.message}`)
+    console.error(`   Error Stack:`, error.stack)
+    console.error(`🔴 ===== ERROR END =====\n`)
+    
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to generate OTP',
+      requestId: requestId,
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    })
+  }
+})
+
+// Verify OTP
+app.post('/api/otp/verify', async (req, res) => {
+  const requestId = Date.now().toString(36)
+  const timestamp = new Date().toISOString()
+  
+  console.log('\n🔵 ===== OTP VERIFY REQUEST =====')
+  console.log(`📥 Request ID: ${requestId}`)
+  console.log(`⏰ Timestamp: ${timestamp}`)
+  
+  try {
+    const { phoneNumber, otp } = req.body
+    
+    // Validate inputs
+    if (!phoneNumber || typeof phoneNumber !== 'string' || !phoneNumber.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Phone number is required',
+        requestId: requestId
+      })
+    }
+
+    if (!otp || typeof otp !== 'string' || !otp.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'OTP is required',
+        requestId: requestId
+      })
+    }
+
+    // Format phone number
+    const formattedPhone = phoneNumber.trim().replace(/\s+/g, '')
+    const providedOTP = otp.trim()
+
+    console.log(`📱 Phone Number: ${formattedPhone}`)
+    console.log(`🔐 Provided OTP: ${providedOTP}`)
+
+    // Connect to MongoDB
+    let client
+    try {
+      client = await connectToDatabase()
+    } catch (dbError) {
+      console.error(`❌ Database connection error: ${dbError.message}`)
+      return res.status(500).json({
+        success: false,
+        error: 'Database connection failed',
+        requestId: requestId
+      })
+    }
+
+    const db = client.db(DB_NAME)
+    const otpCollection = db.collection(OTP_COLLECTION_NAME)
+
+    // Find OTP record
+    const otpRecord = await otpCollection.findOne({
+      phoneNumber: formattedPhone,
+      verified: false
+    })
+
+    if (!otpRecord) {
+      console.log(`❌ No OTP found for phone number`)
+      return res.status(400).json({
+        success: false,
+        error: 'No OTP found for this phone number. Please generate a new OTP.',
+        requestId: requestId
+      })
+    }
+
+    // Check if OTP is expired
+    if (isOTPExpired(otpRecord.expiresAt)) {
+      console.log(`❌ OTP expired`)
+      await otpCollection.deleteOne({ _id: otpRecord._id })
+      return res.status(400).json({
+        success: false,
+        error: 'OTP has expired. Please generate a new OTP.',
+        requestId: requestId
+      })
+    }
+
+    // Check if max attempts exceeded
+    if (otpRecord.attempts >= otpRecord.maxAttempts) {
+      console.log(`❌ Max attempts exceeded: ${otpRecord.attempts}/${otpRecord.maxAttempts}`)
+      await otpCollection.deleteOne({ _id: otpRecord._id })
+      return res.status(400).json({
+        success: false,
+        error: 'Maximum verification attempts exceeded. Please generate a new OTP.',
+        requestId: requestId
+      })
+    }
+
+    // Increment attempts
+    await otpCollection.updateOne(
+      { _id: otpRecord._id },
+      { $inc: { attempts: 1 } }
+    )
+
+    // Verify OTP
+    if (otpRecord.otp !== providedOTP) {
+      console.log(`❌ OTP mismatch`)
+      const updatedRecord = await otpCollection.findOne({ _id: otpRecord._id })
+      const remainingAttempts = updatedRecord.maxAttempts - updatedRecord.attempts
+      
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid OTP',
+        remainingAttempts: remainingAttempts > 0 ? remainingAttempts : 0,
+        requestId: requestId
+      })
+    }
+
+    // Mark OTP as verified
+    await otpCollection.updateOne(
+      { _id: otpRecord._id },
+      { 
+        $set: { 
+          verified: true,
+          verifiedAt: new Date()
+        } 
+      }
+    )
+
+    console.log(`✅ OTP verified successfully`)
+
+    return res.status(200).json({
+      success: true,
+      message: 'OTP verified successfully',
+      phoneNumber: formattedPhone,
+      verified: true,
+      requestId: requestId,
+      timestamp: timestamp
+    })
+
+  } catch (error) {
+    console.error('\n❌❌❌ OTP VERIFY ERROR ❌❌❌')
+    console.error(`🔴 Request ID ${requestId} - Error occurred`)
+    console.error(`   Error Type: ${error.constructor.name}`)
+    console.error(`   Error Message: ${error.message}`)
+    console.error(`   Error Stack:`, error.stack)
+    console.error(`🔴 ===== ERROR END =====\n`)
+    
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to verify OTP',
+      requestId: requestId,
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    })
+  }
+})
+
 // Bookings endpoint
 app.post('/api/bookings', async (req, res) => {
   const requestId = Date.now().toString(36)
@@ -432,6 +701,11 @@ app.post('/api/bookings', async (req, res) => {
     }
     console.log(`   - Has customerImage: ${!!bookingData.customerImage}`)
     console.log(`   - Has customerImages: ${!!bookingData.customerImages} (${Array.isArray(bookingData.customerImages) ? bookingData.customerImages.length : 'not array'})`)
+    console.log(`   - Has OTP Phone Number: ${!!bookingData.otpPhoneNumber}`)
+    console.log(`   - Has OTP: ${!!bookingData.otp}`)
+    if (bookingData.otpPhoneNumber) {
+      console.log(`   - OTP Phone: ${bookingData.otpPhoneNumber}`)
+    }
     
     // Debug: Check all identity document related fields in request
     const identityFields = Object.keys(bookingData).filter(key => 
@@ -638,6 +912,118 @@ app.post('/api/bookings', async (req, res) => {
     }
     
     console.log(`\n✅ All validations passed`)
+
+    // OTP Verification (if phone number and OTP are provided)
+    if (bookingData.otpPhoneNumber && bookingData.otp) {
+      console.log(`\n🔐 Starting OTP verification...`)
+      console.log(`   Phone Number: ${bookingData.otpPhoneNumber}`)
+      
+      try {
+        // Connect to MongoDB to verify OTP
+        let client
+        try {
+          client = await connectToDatabase()
+        } catch (dbError) {
+          console.error(`❌ Database connection error: ${dbError.message}`)
+          return res.status(500).json({
+            success: false,
+            error: 'Database connection failed',
+            requestId: requestId
+          })
+        }
+
+        const db = client.db(DB_NAME)
+        const otpCollection = db.collection(OTP_COLLECTION_NAME)
+
+        // Format phone number
+        const formattedPhone = bookingData.otpPhoneNumber.trim().replace(/\s+/g, '')
+        const providedOTP = bookingData.otp.trim()
+
+        // Find OTP record
+        const otpRecord = await otpCollection.findOne({
+          phoneNumber: formattedPhone,
+          verified: false
+        })
+
+        if (!otpRecord) {
+          console.log(`❌ No OTP found for phone number`)
+          return res.status(400).json({
+            success: false,
+            error: 'No OTP found for this phone number. Please generate and verify OTP first.',
+            requestId: requestId
+          })
+        }
+
+        // Check if OTP is expired
+        if (isOTPExpired(otpRecord.expiresAt)) {
+          console.log(`❌ OTP expired`)
+          await otpCollection.deleteOne({ _id: otpRecord._id })
+          return res.status(400).json({
+            success: false,
+            error: 'OTP has expired. Please generate a new OTP.',
+            requestId: requestId
+          })
+        }
+
+        // Check if max attempts exceeded
+        if (otpRecord.attempts >= otpRecord.maxAttempts) {
+          console.log(`❌ Max attempts exceeded`)
+          await otpCollection.deleteOne({ _id: otpRecord._id })
+          return res.status(400).json({
+            success: false,
+            error: 'Maximum verification attempts exceeded. Please generate a new OTP.',
+            requestId: requestId
+          })
+        }
+
+        // Verify OTP
+        if (otpRecord.otp !== providedOTP) {
+          console.log(`❌ OTP mismatch`)
+          await otpCollection.updateOne(
+            { _id: otpRecord._id },
+            { $inc: { attempts: 1 } }
+          )
+          const updatedRecord = await otpCollection.findOne({ _id: otpRecord._id })
+          const remainingAttempts = updatedRecord.maxAttempts - updatedRecord.attempts
+          
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid OTP',
+            remainingAttempts: remainingAttempts > 0 ? remainingAttempts : 0,
+            requestId: requestId
+          })
+        }
+
+        // Mark OTP as verified
+        await otpCollection.updateOne(
+          { _id: otpRecord._id },
+          { 
+            $set: { 
+              verified: true,
+              verifiedAt: new Date()
+            } 
+          }
+        )
+
+        console.log(`✅ OTP verified successfully`)
+      } catch (otpError) {
+        console.error(`❌ OTP verification error: ${otpError.message}`)
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to verify OTP',
+          requestId: requestId,
+          details: process.env.NODE_ENV === 'development' ? otpError.message : undefined
+        })
+      }
+    } else if (bookingData.otpPhoneNumber || bookingData.otp) {
+      // If one is provided but not both
+      console.log(`⚠️  OTP verification requested but incomplete data`)
+      return res.status(400).json({
+        success: false,
+        error: 'Both phone number and OTP are required for verification',
+        requestId: requestId
+      })
+    }
 
     // Determine route and set dial codes automatically (needed for EID name logic)
     const service = bookingData.service || 'uae-to-pinas'
@@ -944,6 +1330,15 @@ app.post('/api/bookings', async (req, res) => {
         }
       } : {}),
       
+      // OTP Verification Status
+      ...(bookingData.otpPhoneNumber && bookingData.otp ? {
+        otpVerification: {
+          phoneNumber: bookingData.otpPhoneNumber.trim().replace(/\s+/g, ''),
+          verified: true,
+          verifiedAt: new Date()
+        }
+      } : {}),
+      
       // Additional Details (optional - frontend no longer collects this)
       additionalDetails: bookingData.additionalDetails ? {
         paymentMethod: bookingData.additionalDetails.paymentMethod || 'cash',
@@ -1083,6 +1478,8 @@ if (process.env.VERCEL !== '1') {
     console.log(`   GET  /api             - API info`)
     console.log(`   POST /api/bookings    - Submit booking`)
     console.log(`   POST /api/ocr         - OCR for Emirates ID detection`)
+    console.log(`   POST /api/otp/generate - Generate and send OTP`)
+    console.log(`   POST /api/otp/verify  - Verify OTP`)
     console.log(`\n✅ Server ready and listening on 0.0.0.0:${PORT}`)
   })
 }
