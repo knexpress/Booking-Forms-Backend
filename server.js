@@ -36,7 +36,7 @@ function extractDatabaseName(uri) {
 }
 
 // Get database name from environment variable, URI, or use default
-const DB_NAME = process.env.MONGODB_DB_NAME || extractDatabaseName(MONGODB_URI) || 'finance'
+const DB_NAME = process.env.MONGODB_DB_NAME || extractDatabaseName(MONGODB_URI) || 'knexpress'
 const COLLECTION_NAME = process.env.MONGODB_COLLECTION_NAME || 'bookings'
 const OTP_COLLECTION_NAME = process.env.MONGODB_OTP_COLLECTION_NAME || 'otps'
 
