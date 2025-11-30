@@ -20,14 +20,37 @@ const PORT = process.env.PORT || 5000
 
 // MongoDB configuration
 const MONGODB_URI = process.env.MONGODB_URI
-const DB_NAME = 'finance'
-const COLLECTION_NAME = 'bookings'
-const OTP_COLLECTION_NAME = 'otps'
+
+// Extract database name from URI if present, otherwise use environment variable or default
+function extractDatabaseName(uri) {
+  if (!uri) return null
+  
+  // Try to extract database name from URI path
+  // Format: mongodb+srv://user:pass@cluster.mongodb.net/database?options
+  const pathMatch = uri.match(/mongodb(\+srv)?:\/\/[^\/]+\/([^?]+)/)
+  if (pathMatch && pathMatch[2]) {
+    return pathMatch[2]
+  }
+  
+  return null
+}
+
+// Get database name from environment variable, URI, or use default
+const DB_NAME = process.env.MONGODB_DB_NAME || extractDatabaseName(MONGODB_URI) || 'finance'
+const COLLECTION_NAME = process.env.MONGODB_COLLECTION_NAME || 'bookings'
+const OTP_COLLECTION_NAME = process.env.MONGODB_OTP_COLLECTION_NAME || 'otps'
 
 if (!MONGODB_URI) {
   console.error('❌ MONGODB_URI environment variable is not set')
   process.exit(1)
 }
+
+// Log MongoDB configuration
+console.log('\n📊 MongoDB Configuration:')
+console.log(`   URI: ${MONGODB_URI.substring(0, 30)}...${MONGODB_URI.substring(MONGODB_URI.length - 20)}`)
+console.log(`   Database: ${DB_NAME}`)
+console.log(`   Bookings Collection: ${COLLECTION_NAME}`)
+console.log(`   OTP Collection: ${OTP_COLLECTION_NAME}`)
 
 let cachedClient = null
 
@@ -41,25 +64,77 @@ async function connectToDatabase() {
     await client.connect()
     cachedClient = client
     
+    // Verify database and collections exist or can be accessed
+    const db = client.db(DB_NAME)
+    
+    // List collections to verify database is accessible
+    const collections = await db.listCollections().toArray()
+    const collectionNames = collections.map(c => c.name)
+    
     console.log('✅ Connected to MongoDB')
     console.log(`   Database: ${DB_NAME}`)
-    console.log(`   Collection: ${COLLECTION_NAME}`)
+    console.log(`   Available collections: ${collectionNames.length > 0 ? collectionNames.join(', ') : 'none (will be created on first insert)'}`)
+    console.log(`   Target Bookings Collection: ${COLLECTION_NAME}`)
+    console.log(`   Target OTP Collection: ${OTP_COLLECTION_NAME}`)
+    
+    // Verify collections exist or will be created
+    if (!collectionNames.includes(COLLECTION_NAME)) {
+      console.log(`   ℹ️  Collection '${COLLECTION_NAME}' will be created on first insert`)
+    }
+    if (!collectionNames.includes(OTP_COLLECTION_NAME)) {
+      console.log(`   ℹ️  Collection '${OTP_COLLECTION_NAME}' will be created on first insert`)
+    }
     
     return client
   } catch (error) {
     console.error('❌ MongoDB connection error:', error.message)
+    console.error('   Please verify:')
+    console.error('   1. MONGODB_URI is correct and includes database name if needed')
+    console.error('   2. Database name is correct (check MONGODB_DB_NAME or URI path)')
+    console.error('   3. Network access is allowed in MongoDB Atlas')
+    console.error('   4. Credentials are valid')
     throw error
   }
 }
 
 // Middleware - CORS configuration
-app.use(cors({
-  origin: '*', // Allow all origins (for development)
+// Support Ngrok and other origins via environment variable or allow all in development
+const allowedOrigins = process.env.ALLOWED_ORIGINS 
+  ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
+  : ['*'] // Allow all origins in development
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, Postman, or curl)
+    if (!origin) {
+      return callback(null, true)
+    }
+    
+    // If '*' is in allowed origins, allow all
+    if (allowedOrigins.includes('*')) {
+      return callback(null, true)
+    }
+    
+    // Check if origin is in allowed list
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true)
+    }
+    
+    // Allow Ngrok URLs (any URL containing ngrok.io or ngrok-free.app)
+    if (origin.includes('ngrok.io') || origin.includes('ngrok-free.app') || origin.includes('ngrok.app')) {
+      return callback(null, true)
+    }
+    
+    // Default: allow the request
+    callback(null, true)
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'ngrok-skip-browser-warning'],
   exposedHeaders: ['Content-Length', 'X-Request-Id']
-}))
+}
+
+app.use(cors(corsOptions))
 // Note: CORS middleware automatically handles OPTIONS preflight requests
 
 app.use(express.json({ limit: '10mb' }))
