@@ -9,7 +9,7 @@ import cors from 'cors'
 import { MongoClient } from 'mongodb'
 import dotenv from 'dotenv'
 import { processEmiratesID } from './services/longcat-ocr.js'
-import { extractNameFromText, normalizeName, compareNames } from './services/openai-ocr.js'
+import { extractNameFromText, normalizeName, compareNames, isSimilarName } from './services/openai-ocr.js'
 import { generateOTP, sendOTP, getOTPExpiry, isOTPExpired, getOTPConfig } from './services/otp-service.js'
 
 // Load environment variables
@@ -349,11 +349,15 @@ app.post('/api/ocr', async (req, res) => {
       // Split extracted name into words
       const extractedWords = normalizedExtracted.split(' ').filter(w => w.length > 0)
       
-      // Check if first name appears in extracted name
-      const firstNameMatches = extractedWords.some(word => word === normalizedFirst)
+      // Check if first name appears in extracted name (with fuzzy matching for OCR errors)
+      const firstNameMatches = extractedWords.some(word => 
+        word === normalizedFirst || isSimilarName(word, normalizedFirst)
+      )
       
-      // Check if last name appears in extracted name
-      const lastNameMatches = extractedWords.some(word => word === normalizedLast)
+      // Check if last name appears in extracted name (with fuzzy matching for OCR errors)
+      const lastNameMatches = extractedWords.some(word => 
+        word === normalizedLast || isSimilarName(word, normalizedLast)
+      )
       
       const nameMatch = firstNameMatches && lastNameMatches
       
@@ -989,6 +993,7 @@ app.post('/api/bookings', async (req, res) => {
     console.log(`\n✅ All validations passed`)
 
     // OTP Verification (if phone number and OTP are provided)
+    let verifiedOTP = null // Store the verified OTP value to save in booking
     if (bookingData.otpPhoneNumber && bookingData.otp) {
       console.log(`\n🔐 Starting OTP verification...`)
       console.log(`   Phone Number: ${bookingData.otpPhoneNumber}`)
@@ -1069,6 +1074,9 @@ app.post('/api/bookings', async (req, res) => {
           })
         }
 
+        // Store the verified OTP value to save in booking
+        verifiedOTP = otpRecord.otp
+
         // Mark OTP as verified
         await otpCollection.updateOne(
           { _id: otpRecord._id },
@@ -1081,6 +1089,7 @@ app.post('/api/bookings', async (req, res) => {
         )
 
         console.log(`✅ OTP verified successfully`)
+        console.log(`   OTP value will be saved in booking: ${verifiedOTP}`)
       } catch (otpError) {
         console.error(`❌ OTP verification error: ${otpError.message}`)
         return res.status(500).json({
@@ -1386,7 +1395,7 @@ app.post('/api/bookings', async (req, res) => {
         // EID Name fields (for verification) - store the names used for verification
         ...(eidFirstName && { eidFrontImageFirstName: eidFirstName }),
         ...(eidLastName && { eidFrontImageLastName: eidLastName }),
-        // Philippines ID documents (for Philippines to UAE route)
+        // Philippines ID documents (accepted for both UAE to PH and PH to UAE routes)
         // Only include if they have values (MongoDB omits null fields)
         ...(bookingData.philippinesIdFront && { philippinesIdFront: bookingData.philippinesIdFront }),
         ...(bookingData.philippinesIdBack && { philippinesIdBack: bookingData.philippinesIdBack }),
@@ -1406,9 +1415,10 @@ app.post('/api/bookings', async (req, res) => {
       } : {}),
       
       // OTP Verification Status
-      ...(bookingData.otpPhoneNumber && bookingData.otp ? {
+      ...(bookingData.otpPhoneNumber && bookingData.otp && verifiedOTP ? {
         otpVerification: {
           phoneNumber: bookingData.otpPhoneNumber.trim().replace(/\s+/g, ''),
+          otp: verifiedOTP, // Save the actual OTP value in booking
           verified: true,
           verifiedAt: new Date()
         }
@@ -1440,9 +1450,10 @@ app.post('/api/bookings', async (req, res) => {
     console.log(`   - customerImage: ${bookingDocument.identityDocuments.customerImage ? 'Present (' + bookingDocument.identityDocuments.customerImage.length + ' chars)' : 'null'}`)
     console.log(`   - customerImages: ${bookingDocument.identityDocuments.customerImages?.length || 0} images`)
     
-    // Verify Philippines ID images for ph-to-uae route
-    if (isPhilippinesToUAE) {
-      console.log(`\n🇵🇭 Philippines to UAE Route - ID Document Check:`)
+    // Log Philippines ID images for both routes (UAE to PH and PH to UAE)
+    if (bookingDocument.identityDocuments.philippinesIdFront || bookingDocument.identityDocuments.philippinesIdBack) {
+      const routeLabel = isPhilippinesToUAE ? 'Philippines to UAE' : 'UAE to Philippines'
+      console.log(`\n🇵🇭 ${routeLabel} Route - Philippines ID Document Check:`)
       console.log(`   - philippinesIdFront: ${bookingDocument.identityDocuments.philippinesIdFront ? '✅ Received (' + bookingDocument.identityDocuments.philippinesIdFront.length + ' chars)' : '❌ Missing'}`)
       console.log(`   - philippinesIdBack: ${bookingDocument.identityDocuments.philippinesIdBack ? '✅ Received (' + bookingDocument.identityDocuments.philippinesIdBack.length + ' chars)' : '❌ Missing'}`)
       

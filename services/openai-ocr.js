@@ -212,6 +212,71 @@ function extractFromTextResponse(text) {
 }
 
 /**
+ * Calculate Levenshtein distance between two strings
+ * @param {string} str1 - First string
+ * @param {string} str2 - Second string
+ * @returns {number} - Edit distance
+ */
+function levenshteinDistance(str1, str2) {
+  const len1 = str1.length
+  const len2 = str2.length
+  const matrix = Array(len1 + 1).fill(null).map(() => Array(len2 + 1).fill(0))
+  
+  for (let i = 0; i <= len1; i++) matrix[i][0] = i
+  for (let j = 0; j <= len2; j++) matrix[0][j] = j
+  
+  for (let i = 1; i <= len1; i++) {
+    for (let j = 1; j <= len2; j++) {
+      const cost = str1[i - 1] === str2[j - 1] ? 0 : 1
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,      // deletion
+        matrix[i][j - 1] + 1,      // insertion
+        matrix[i - 1][j - 1] + cost // substitution
+      )
+    }
+  }
+  
+  return matrix[len1][len2]
+}
+
+/**
+ * Check if two strings are similar enough (fuzzy match) to account for OCR errors
+ * @param {string} str1 - First string
+ * @param {string} str2 - Second string
+ * @returns {boolean} - True if strings are similar enough
+ */
+export function isSimilarName(str1, str2) {
+  if (!str1 || !str2) return false
+  
+  // Exact match
+  if (str1 === str2) return true
+  
+  const len1 = str1.length
+  const len2 = str2.length
+  
+  // If lengths are very different, not similar
+  if (Math.abs(len1 - len2) > 2) return false
+  
+  // Calculate edit distance
+  const distance = levenshteinDistance(str1, str2)
+  
+  // For short names (1-5 chars), allow 1 character difference
+  if (len1 <= 5 || len2 <= 5) {
+    return distance <= 1
+  }
+  
+  // For medium names (6-10 chars), allow 1-2 character differences
+  if (len1 <= 10 || len2 <= 10) {
+    return distance <= 2
+  }
+  
+  // For longer names, use similarity percentage (at least 85% similar)
+  const maxLen = Math.max(len1, len2)
+  const similarity = 1 - (distance / maxLen)
+  return similarity >= 0.85
+}
+
+/**
  * Normalize name for comparison
  * @param {string} name - Name to normalize
  * @returns {string} - Normalized name
@@ -298,12 +363,16 @@ export function compareNames(extractedName, providedFirstName, providedLastName)
     }
   }
   
-  // Check first name match (first part)
-  const firstNameMatches = extractedParts[0] === normalizedProvidedFirst
+  // Check first name match (first part) - using fuzzy matching for OCR errors
+  const extractedFirst = extractedParts[0]
+  const firstNameMatches = extractedFirst === normalizedProvidedFirst || 
+                           isSimilarName(extractedFirst, normalizedProvidedFirst)
   
   // Check last name match (last part is always the primary check)
   // For names with multiple parts, the last part is typically the family name
-  const lastNameMatches = extractedParts[extractedParts.length - 1] === normalizedProvidedLast
+  const extractedLast = extractedParts[extractedParts.length - 1]
+  const lastNameMatches = extractedLast === normalizedProvidedLast || 
+                         isSimilarName(extractedLast, normalizedProvidedLast)
   
   // Calculate confidence
   let confidence = 0
@@ -328,14 +397,17 @@ export function compareNames(extractedName, providedFirstName, providedLastName)
     const extractedFirst = extractedParts[0]
     const extractedLast = extractedParts[extractedParts.length - 1]
     
-    // Check if provided first name matches the first part
-    const firstInExtracted = extractedParts[0] === normalizedProvidedFirst
+    // Check if provided first name matches the first part (with fuzzy matching)
+    const firstInExtracted = extractedParts[0] === normalizedProvidedFirst ||
+                            isSimilarName(extractedParts[0], normalizedProvidedFirst) ||
+                            extractedParts.some(part => isSimilarName(part, normalizedProvidedFirst))
     
     // Check if provided last name matches the last part (most common case)
-    // OR appears anywhere in the extracted name (for edge cases)
+    // OR appears anywhere in the extracted name (for edge cases) - with fuzzy matching
     const lastInExtracted = 
       extractedParts[extractedParts.length - 1] === normalizedProvidedLast ||
-      extractedParts.some(part => part === normalizedProvidedLast)
+      isSimilarName(extractedParts[extractedParts.length - 1], normalizedProvidedLast) ||
+      extractedParts.some(part => isSimilarName(part, normalizedProvidedLast))
     
     if (firstInExtracted && lastInExtracted) {
       // First name matches first part AND last name matches last part or appears in name
