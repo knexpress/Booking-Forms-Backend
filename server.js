@@ -9,7 +9,7 @@ import cors from 'cors'
 import { MongoClient } from 'mongodb'
 import dotenv from 'dotenv'
 import { processEmiratesID } from './services/longcat-ocr.js'
-import { extractNameFromText, normalizeName, compareNames, isSimilarName } from './services/openai-ocr.js'
+// Name extraction/comparison imports removed - EID verification now only checks if images are valid EID front/back
 import { generateOTP, sendOTP, getOTPExpiry, isOTPExpired, getOTPConfig } from './services/otp-service.js'
 
 // Load environment variables
@@ -330,78 +330,9 @@ app.post('/api/ocr', async (req, res) => {
       })
     }
 
-    // Name verification ONLY for front side (back side doesn't have name field)
-    let nameVerification = null
-    const isFrontSide = identification.side === 'front' || requiresBackSide
-    
-    // Only perform name verification for front side
-    if (isFrontSide && firstName && lastName && typeof firstName === 'string' && typeof lastName === 'string' && firstName.trim() && lastName.trim() && extractedName) {
-      console.log(`\n🔍 Starting name verification (FRONT SIDE)...`)
-      console.log(`   Extracted Name: ${extractedName}`)
-      console.log(`   Provided First Name: ${firstName}`)
-      console.log(`   Provided Last Name: ${lastName}`)
-      
-      // Normalize names for comparison
-      const normalizedExtracted = normalizeName(extractedName)
-      const normalizedFirst = normalizeName(firstName)
-      const normalizedLast = normalizeName(lastName)
-      
-      // Split extracted name into words
-      const extractedWords = normalizedExtracted.split(' ').filter(w => w.length > 0)
-      
-      // Check if first name appears in extracted name (with fuzzy matching for OCR errors)
-      const firstNameMatches = extractedWords.some(word => 
-        word === normalizedFirst || isSimilarName(word, normalizedFirst)
-      )
-      
-      // Check if last name appears in extracted name (with fuzzy matching for OCR errors)
-      const lastNameMatches = extractedWords.some(word => 
-        word === normalizedLast || isSimilarName(word, normalizedLast)
-      )
-      
-      const nameMatch = firstNameMatches && lastNameMatches
-      
-      nameVerification = {
-        nameMatch: nameMatch,
-        extractedName: extractedName,
-        providedFirstName: firstName,
-        providedLastName: lastName,
-        firstNameFound: firstNameMatches,
-        lastNameFound: lastNameMatches,
-        message: nameMatch 
-          ? 'Name matches Emirates ID' 
-          : 'Name on Emirates ID does not match provided name'
-      }
-      
-      console.log(`   ✅ Name Verification Result:`)
-      console.log(`      - First Name Found: ${firstNameMatches}`)
-      console.log(`      - Last Name Found: ${lastNameMatches}`)
-      console.log(`      - Overall Match: ${nameMatch}`)
-      console.log(`      - Message: ${nameVerification.message}`)
-      
-      // If names don't match, reject the request
-      if (!nameMatch) {
-        console.log(`❌ Name verification failed - names do not match`)
-        return res.status(400).json({
-          success: false,
-          error: 'Name on Emirates ID does not match the provided name. Please ensure the Emirates ID belongs to the correct person.',
-          requestId: requestId,
-          nameVerification: nameVerification,
-          identification: identification
-        })
-      }
-    } else if (isFrontSide && firstName && lastName && typeof firstName === 'string' && typeof lastName === 'string' && firstName.trim() && lastName.trim() && !extractedName) {
-      console.log(`⚠️  Name verification requested for front side but could not extract name from EID`)
-      return res.status(400).json({
-        success: false,
-        error: 'Could not extract name from Emirates ID. Please ensure the image is clear and the name is visible.',
-        requestId: requestId,
-        identification: identification
-      })
-    } else if (!isFrontSide && firstName && lastName) {
-      console.log(`ℹ️  Back side detected - skipping name verification (back side doesn't contain name field)`)
-      // For back side, we just verify it's an Emirates ID, no name comparison needed
-    }
+    // Skip name verification - just verify it's a valid EID front or back
+    // No OCR name extraction or name comparison needed
+    console.log(`\n✅ EID verification: Only checking if image is valid EID front/back (no name comparison)`)
 
     // If it's the front side, indicate that back side is required
     if (requiresBackSide) {
@@ -414,8 +345,6 @@ app.post('/api/ocr', async (req, res) => {
         message: 'Emirates ID front side detected. Please send the back side image.',
         identification: identification,
         extractedText: extractedText.substring(0, 500), // Return first 500 chars for debugging
-        extractedName: extractedName || null,
-        nameVerification: nameVerification,
         requestId: requestId,
         timestamp: timestamp
       })
@@ -432,8 +361,6 @@ app.post('/api/ocr', async (req, res) => {
         message: 'Emirates ID back side detected.',
         identification: identification,
         extractedText: extractedText.substring(0, 500), // Return first 500 chars for debugging
-        extractedName: extractedName || null,
-        nameVerification: nameVerification,
         requestId: requestId,
         timestamp: timestamp
       })
@@ -449,8 +376,6 @@ app.post('/api/ocr', async (req, res) => {
       message: 'Emirates ID detected but side could not be determined.',
       identification: identification,
       extractedText: extractedText.substring(0, 500),
-      extractedName: extractedName || null,
-      nameVerification: nameVerification,
       requestId: requestId,
       timestamp: timestamp
     })
@@ -807,6 +732,9 @@ app.post('/api/bookings', async (req, res) => {
       console.log(`   - Address Line 1: ${bookingData.sender.addressLine1 || 'missing'}`)
       console.log(`   - Phone: ${bookingData.sender.phoneNumber || 'missing'}`)
       console.log(`   - Dial Code (sent): ${bookingData.sender.dialCode || 'not provided'}`)
+      console.log(`   - Delivery Option: ${bookingData.sender.deliveryOption || 'not provided'}`)
+      console.log(`   - Insured: ${bookingData.sender.insured !== undefined ? bookingData.sender.insured : 'not provided'}`)
+      console.log(`   - Declared Amount: ${bookingData.sender.declaredAmount !== undefined ? bookingData.sender.declaredAmount : 'not provided'}`)
       if (bookingData.sender.formFillerLatitude !== undefined && bookingData.sender.formFillerLongitude !== undefined) {
         console.log(`   - Form Filler Location: ${bookingData.sender.formFillerLatitude}, ${bookingData.sender.formFillerLongitude}`)
       } else {
@@ -989,6 +917,79 @@ app.post('/api/bookings', async (req, res) => {
         requestId: requestId
       })
     }
+
+    // Validate insurance fields (only for uae-to-pinas service)
+    const service = bookingData.service || 'uae-to-pinas'
+    const serviceLower = service.toLowerCase()
+    const isUAEToPinas = !serviceLower.includes('philippines-to-uae') && 
+                          !serviceLower.includes('pinas-to-uae') &&
+                          !serviceLower.includes('ph-to-uae')
+    
+    if (isUAEToPinas && bookingData.sender.insured !== undefined) {
+      // Validate insured is a boolean
+      if (typeof bookingData.sender.insured !== 'boolean') {
+        console.log(`\n❌ VALIDATION ERROR: Invalid insured field type`)
+        console.log(`   Insured value: ${bookingData.sender.insured}`)
+        console.log(`   Type: ${typeof bookingData.sender.insured}`)
+        console.log(`🔴 Request ID ${requestId} - Validation failed: insured must be a boolean`)
+        
+        return res.status(400).json({
+          success: false,
+          error: 'insured must be a boolean value',
+          requestId: requestId
+        })
+      }
+
+      // If insured is true, declaredAmount must be provided and valid
+      if (bookingData.sender.insured === true) {
+        if (bookingData.sender.declaredAmount === undefined || bookingData.sender.declaredAmount === null) {
+          console.log(`\n❌ VALIDATION ERROR: declaredAmount is required when insured is true`)
+          console.log(`🔴 Request ID ${requestId} - Validation failed: declaredAmount missing`)
+          
+          return res.status(400).json({
+            success: false,
+            error: 'declaredAmount is required when insured is true',
+            requestId: requestId
+          })
+        }
+
+        // Validate declaredAmount is a number
+        if (typeof bookingData.sender.declaredAmount !== 'number') {
+          console.log(`\n❌ VALIDATION ERROR: Invalid declaredAmount type`)
+          console.log(`   Declared Amount: ${bookingData.sender.declaredAmount}`)
+          console.log(`   Type: ${typeof bookingData.sender.declaredAmount}`)
+          console.log(`🔴 Request ID ${requestId} - Validation failed: declaredAmount must be a number`)
+          
+          return res.status(400).json({
+            success: false,
+            error: 'declaredAmount must be a number',
+            requestId: requestId
+          })
+        }
+
+        // Validate declaredAmount range (0.01 to 1,000,000)
+        if (bookingData.sender.declaredAmount < 0.01 || bookingData.sender.declaredAmount > 1000000) {
+          console.log(`\n❌ VALIDATION ERROR: declaredAmount out of range`)
+          console.log(`   Declared Amount: ${bookingData.sender.declaredAmount}`)
+          console.log(`   Valid range: 0.01 to 1,000,000`)
+          console.log(`🔴 Request ID ${requestId} - Validation failed: declaredAmount out of range`)
+          
+          return res.status(400).json({
+            success: false,
+            error: 'declaredAmount must be between 0.01 and 1,000,000',
+            requestId: requestId
+          })
+        }
+      } else {
+        // If insured is false, declaredAmount should be ignored or null
+        if (bookingData.sender.declaredAmount !== undefined && bookingData.sender.declaredAmount !== null) {
+          console.log(`\n⚠️  WARNING: declaredAmount provided but insured is false - will be ignored`)
+        }
+      }
+    } else if (!isUAEToPinas && (bookingData.sender.insured !== undefined || bookingData.sender.declaredAmount !== undefined)) {
+      // Insurance fields should not be present for non-uae-to-pinas services
+      console.log(`\n⚠️  WARNING: Insurance fields provided for non-uae-to-pinas service - will be ignored`)
+    }
     
     console.log(`\n✅ All validations passed`)
 
@@ -1110,8 +1111,7 @@ app.post('/api/bookings', async (req, res) => {
     }
 
     // Determine route and set dial codes automatically (needed for EID name logic)
-    const service = bookingData.service || 'uae-to-pinas'
-    const serviceLower = service.toLowerCase()
+    // Note: service and serviceLower are already declared in validation section above
     const isPhilippinesToUAE = serviceLower.includes('philippines-to-uae') || 
                                 serviceLower.includes('pinas-to-uae') ||
                                 serviceLower.includes('ph-to-uae')
@@ -1139,139 +1139,160 @@ app.post('/api/bookings', async (req, res) => {
       }
     }
 
-    // EID Name Verification (if EID front image is provided)
+    // EID Verification - Just verify if images are valid EID front and back (no name comparison)
     let eidVerification = null
-    if (bookingData.eidFrontImage && eidFirstName && eidLastName) {
-      console.log(`\n🔍 Starting EID name verification...`)
-      console.log(`   Using First Name: ${eidFirstName}`)
-      console.log(`   Using Last Name: ${eidLastName}`)
+    if (bookingData.eidFrontImage) {
+      console.log(`\n🔍 Starting EID verification (front side)...`)
+      console.log(`   Skipping name extraction and comparison - only verifying if it's a valid EID front`)
       
       try {
-        // Process Emirates ID to extract name
+        // Process Emirates ID to verify it's a valid EID front
         const eidResult = await processEmiratesID(bookingData.eidFrontImage)
         
         if (eidResult.success && eidResult.identification.isEmiratesID) {
-          // Get extracted name from OCR result or try to extract from text
-          let extractedName = eidResult.extractedName
+          const isFrontSide = eidResult.identification.side === 'front' || eidResult.requiresBackSide
           
-          // If name not extracted by OpenAI, try to extract from text
-          if (!extractedName && eidResult.extractedText) {
-            extractedName = extractNameFromText(eidResult.extractedText)
-          }
-          
-          if (extractedName) {
-            console.log(`   Extracted Name from EID: ${extractedName}`)
-            
-            // Compare names
-            const matchResult = compareNames(
-              extractedName,
-              eidFirstName,
-              eidLastName
-            )
-            
+          if (isFrontSide) {
+            console.log(`   ✅ Valid EID front side detected`)
             eidVerification = {
               isEmiratesId: true,
-              nameMatch: matchResult.matches,
-              nameMatchConfidence: matchResult.confidence,
-              extractedName: extractedName,
-              providedFirstName: eidFirstName,
-              providedLastName: eidLastName,
-              verificationMessage: matchResult.message
+              isFrontSide: true,
+              isFrontValid: true,
+              verificationMessage: 'Valid Emirates ID front side detected.'
             }
-            
-            console.log(`   ✅ Name Verification Result:`)
-            console.log(`      - Match: ${matchResult.matches}`)
-            console.log(`      - Confidence: ${(matchResult.confidence * 100).toFixed(0)}%`)
-            console.log(`      - Message: ${matchResult.message}`)
           } else {
-            console.log(`   ⚠️  Could not extract name from Emirates ID`)
+            console.log(`   ⚠️  EID detected but not front side`)
             eidVerification = {
               isEmiratesId: true,
-              nameMatch: null,
-              nameMatchConfidence: null,
-              extractedName: null,
-              providedFirstName: eidFirstName,
-              providedLastName: eidLastName,
-              verificationMessage: 'Could not extract name from Emirates ID. Manual review required.'
+              isFrontSide: false,
+              isFrontValid: true, // EID is valid, just wrong side
+              verificationMessage: 'Emirates ID detected but not identified as front side.'
             }
           }
         } else {
-          console.log(`   ⚠️  Image is not a valid Emirates ID`)
+          console.log(`   ❌ Image is not a valid Emirates ID`)
           eidVerification = {
             isEmiratesId: false,
-            nameMatch: false,
-            nameMatchConfidence: 0,
-            extractedName: null,
-            providedFirstName: eidFirstName,
-            providedLastName: eidLastName,
-            verificationMessage: 'Image is not a valid Emirates ID. Manual review required.'
+            isFrontSide: false,
+            isFrontValid: false,
+            verificationMessage: 'Image is not a valid Emirates ID.'
           }
         }
       } catch (verificationError) {
         console.error(`   ❌ EID verification error: ${verificationError.message}`)
         eidVerification = {
           isEmiratesId: null,
-          nameMatch: null,
-          nameMatchConfidence: null,
-          extractedName: null,
-          providedFirstName: eidFirstName,
-          providedLastName: eidLastName,
-          verificationMessage: `Error verifying Emirates ID name: ${verificationError.message}`
+          isFrontSide: null,
+          verificationMessage: `Error verifying Emirates ID: ${verificationError.message}`
         }
-      }
-    } else if (bookingData.eidFrontImage) {
-      console.log(`\n⚠️  EID front image provided but name fields missing - skipping name verification`)
-      console.log(`   Service: ${service}`)
-      console.log(`   Is PH to UAE: ${isPhilippinesToUAE}`)
-      console.log(`   eidFrontImageFirstName: ${bookingData.eidFrontImageFirstName || 'missing'}`)
-      console.log(`   eidFrontImageLastName: ${bookingData.eidFrontImageLastName || 'missing'}`)
-      if (isPhilippinesToUAE) {
-        console.log(`   Receiver firstName: ${bookingData.receiver?.firstName || 'missing'}`)
-        console.log(`   Receiver lastName: ${bookingData.receiver?.lastName || 'missing'}`)
-      } else {
-        console.log(`   Sender firstName: ${bookingData.sender?.firstName || 'missing'}`)
-        console.log(`   Sender lastName: ${bookingData.sender?.lastName || 'missing'}`)
       }
     }
 
-    // Validate EID verification result - reject booking if names don't match
+    // Verify EID back side if provided
+    if (bookingData.eidBackImage) {
+      console.log(`\n🔍 Starting EID verification (back side)...`)
+      console.log(`   Skipping name extraction and comparison - only verifying if it's a valid EID back`)
+      
+      try {
+        // Process Emirates ID to verify it's a valid EID back
+        const eidBackResult = await processEmiratesID(bookingData.eidBackImage)
+        
+        if (eidBackResult.success && eidBackResult.identification.isEmiratesID) {
+          const isBackSide = eidBackResult.identification.side === 'back'
+          
+          if (isBackSide) {
+            console.log(`   ✅ Valid EID back side detected`)
+            if (eidVerification) {
+              eidVerification.isBackSide = true
+              eidVerification.isBackValid = true
+              eidVerification.verificationMessage += ' Valid Emirates ID back side detected.'
+            } else {
+              eidVerification = {
+                isEmiratesId: true,
+                isBackSide: true,
+                isBackValid: true,
+                verificationMessage: 'Valid Emirates ID back side detected.'
+              }
+            }
+          } else {
+            console.log(`   ⚠️  EID detected but not back side`)
+            if (eidVerification) {
+              eidVerification.isBackSide = false
+              eidVerification.isBackValid = true // EID is valid, just wrong side
+            } else {
+              eidVerification = {
+                isEmiratesId: true,
+                isBackSide: false,
+                isBackValid: true, // EID is valid, just wrong side
+                verificationMessage: 'Emirates ID detected but not identified as back side.'
+              }
+            }
+          }
+        } else {
+          console.log(`   ❌ Back image is not a valid Emirates ID`)
+          if (eidVerification) {
+            eidVerification.isBackSide = false
+            eidVerification.isBackValid = false
+            eidVerification.verificationMessage += ' Back image is not a valid Emirates ID.'
+          } else {
+            eidVerification = {
+              isEmiratesId: false, // Overall invalid if back is invalid and no front
+              isBackSide: false,
+              isBackValid: false,
+              verificationMessage: 'Back image is not a valid Emirates ID.'
+            }
+          }
+        }
+      } catch (verificationError) {
+        console.error(`   ❌ EID back verification error: ${verificationError.message}`)
+        if (eidVerification) {
+          eidVerification.isBackSide = null
+        } else {
+          eidVerification = {
+            isEmiratesId: null,
+            isBackSide: null,
+            verificationMessage: `Error verifying Emirates ID back: ${verificationError.message}`
+          }
+        }
+      }
+    }
+
+    // Validate EID verification result - reject booking if EID is not valid
     if (eidVerification) {
-      // Reject if EID is not valid
-      if (eidVerification.isEmiratesId === false) {
-        console.log(`\n❌ VALIDATION ERROR: Image is not a valid Emirates ID`)
+      // Reject if EID front is not valid
+      if (bookingData.eidFrontImage && eidVerification.isFrontValid === false) {
+        console.log(`\n❌ VALIDATION ERROR: Front image is not a valid Emirates ID`)
         console.log(`🔴 Request ID ${requestId} - EID validation failed`)
         
         return res.status(400).json({
           success: false,
-          error: 'The provided image is not a valid Emirates ID. Please upload a valid Emirates ID front image.',
+          error: 'The provided front image is not a valid Emirates ID. Please upload a valid Emirates ID front image.',
           requestId: requestId,
           eidVerification: eidVerification
         })
       }
       
-      // Reject if names don't match (with low confidence threshold)
-      if (eidVerification.nameMatch === false && eidVerification.nameMatchConfidence !== null) {
-        const confidenceThreshold = 0.6 // Reject if confidence below 60%
+      // Reject if EID back is provided but not valid
+      if (bookingData.eidBackImage && eidVerification.isBackValid === false) {
+        console.log(`\n❌ VALIDATION ERROR: Back image is not a valid Emirates ID`)
+        console.log(`🔴 Request ID ${requestId} - EID back validation failed`)
         
-        if (eidVerification.nameMatchConfidence < confidenceThreshold) {
-          console.log(`\n❌ VALIDATION ERROR: Name on Emirates ID does not match provided name`)
-          console.log(`   Extracted Name: ${eidVerification.extractedName}`)
-          console.log(`   Provided Name: ${eidVerification.providedFirstName} ${eidVerification.providedLastName}`)
-          console.log(`   Confidence: ${(eidVerification.nameMatchConfidence * 100).toFixed(0)}%`)
-          console.log(`🔴 Request ID ${requestId} - Name verification failed`)
-          
-          return res.status(400).json({
-            success: false,
-            error: 'Name on Emirates ID does not match the provided name. Please ensure the Emirates ID belongs to the correct person.',
-            requestId: requestId,
-            eidVerification: eidVerification
-          })
-        }
+        return res.status(400).json({
+          success: false,
+          error: 'The provided back image is not a valid Emirates ID. Please upload a valid Emirates ID back image.',
+          requestId: requestId,
+          eidVerification: eidVerification
+        })
       }
       
-      // Warn if name match is null (could not extract name) but allow with manual review flag
-      if (eidVerification.nameMatch === null) {
-        console.log(`\n⚠️  WARNING: Could not verify name from Emirates ID - booking will proceed but requires manual review`)
+      // Warn if front side is not detected as front (but EID is valid)
+      if (bookingData.eidFrontImage && eidVerification.isFrontValid === true && eidVerification.isFrontSide === false) {
+        console.log(`\n⚠️  WARNING: Front image may not be a valid EID front side - booking will proceed but requires manual review`)
+      }
+      
+      // Warn if back side is provided but not detected as back (but EID is valid)
+      if (bookingData.eidBackImage && eidVerification.isBackValid === true && eidVerification.isBackSide === false) {
+        console.log(`\n⚠️  WARNING: Back image may not be a valid EID back side - booking will proceed but requires manual review`)
       }
     }
 
@@ -1348,6 +1369,14 @@ app.post('/api/bookings', async (req, res) => {
         // Delivery Options
         deliveryOption: bookingData.sender.deliveryOption || 'warehouse',
         
+        // Insurance Fields (only for uae-to-pinas service)
+        ...(!isPhilippinesToUAE && bookingData.sender.insured !== undefined ? {
+          insured: bookingData.sender.insured,
+          ...(bookingData.sender.insured === true && bookingData.sender.declaredAmount !== undefined && bookingData.sender.declaredAmount !== null ? {
+            declaredAmount: bookingData.sender.declaredAmount
+          } : {})
+        } : {}),
+        
         // Form Filler Location (optional - from browser geolocation)
         ...(bookingData.sender.formFillerLatitude !== undefined && bookingData.sender.formFillerLongitude !== undefined ? {
           formFillerLatitude: bookingData.sender.formFillerLatitude,
@@ -1407,9 +1436,9 @@ app.post('/api/bookings', async (req, res) => {
       // EID Verification Results
       ...(eidVerification ? {
         eidVerification: {
-          nameMatch: eidVerification.nameMatch,
-          nameMatchConfidence: eidVerification.nameMatchConfidence,
-          extractedName: eidVerification.extractedName,
+          isEmiratesId: eidVerification.isEmiratesId,
+          isFrontSide: eidVerification.isFrontSide,
+          isBackSide: eidVerification.isBackSide,
           verificationMessage: eidVerification.verificationMessage
         }
       } : {}),
