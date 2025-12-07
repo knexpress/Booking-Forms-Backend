@@ -15,6 +15,139 @@ import { generateOTP, sendOTP, getOTPExpiry, isOTPExpired, getOTPConfig } from '
 // Load environment variables
 dotenv.config()
 
+// ============================================================================
+// AWB (Air Waybill) Generation Utilities
+// ============================================================================
+
+/**
+ * Generate random uppercase letters
+ * @param {number} length - Number of letters to generate
+ * @returns {string} Random uppercase letters
+ */
+function generateRandomLetters(length) {
+  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  let result = ''
+  for (let i = 0; i < length; i++) {
+    result += letters.charAt(Math.floor(Math.random() * letters.length))
+  }
+  return result
+}
+
+/**
+ * Generate random digits
+ * @param {number} length - Number of digits to generate
+ * @returns {string} Random digits
+ */
+function generateRandomDigits(length) {
+  let result = ''
+  for (let i = 0; i < length; i++) {
+    result += Math.floor(Math.random() * 10).toString()
+  }
+  return result
+}
+
+/**
+ * Generate random alphanumeric characters (uppercase letters and digits)
+ * @param {number} length - Number of characters to generate
+ * @returns {string} Random alphanumeric characters
+ */
+function generateRandomAlphanumeric(length) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+  let result = ''
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length))
+  }
+  return result
+}
+
+/**
+ * Generate AWB (Air Waybill) number based on service type
+ * Format:
+ * - UAE to PH: AE + 2 letters + 3 digits + 2 letters + 8 alphanumeric (17 chars)
+ * - PH to UAE: PH + 2 letters + 3 digits + 2 letters + 8 alphanumeric (17 chars)
+ * @param {string} service - Service type ('uae-to-pinas' or 'ph-to-uae' / 'philippines-to-uae')
+ * @returns {string} Generated AWB number
+ */
+function generateAWB(service) {
+  // Determine prefix based on service
+  const serviceLower = (service || 'uae-to-pinas').toLowerCase()
+  const isPhilippinesToUAE = serviceLower.includes('philippines-to-uae') || 
+                              serviceLower.includes('pinas-to-uae') ||
+                              serviceLower.includes('ph-to-uae')
+  const prefix = isPhilippinesToUAE ? 'PH' : 'AE'
+  
+  // Generate components
+  const twoLetters1 = generateRandomLetters(2)      // 2 uppercase letters
+  const threeDigits = generateRandomDigits(3)       // 3 digits
+  const twoLetters2 = generateRandomLetters(2)     // 2 uppercase letters
+  const eightAlphanumeric = generateRandomAlphanumeric(8) // 8 alphanumeric
+  
+  return `${prefix}${twoLetters1}${threeDigits}${twoLetters2}${eightAlphanumeric}`
+}
+
+/**
+ * Validate AWB format based on service type
+ * @param {string} awb - AWB number to validate
+ * @param {string} service - Service type
+ * @returns {boolean} True if AWB format is valid
+ */
+function validateAWBFormat(awb, service) {
+  if (!awb || typeof awb !== 'string' || awb.length !== 17) {
+    return false
+  }
+  
+  const serviceLower = (service || 'uae-to-pinas').toLowerCase()
+  const isPhilippinesToUAE = serviceLower.includes('philippines-to-uae') || 
+                              serviceLower.includes('pinas-to-uae') ||
+                              serviceLower.includes('ph-to-uae')
+  
+  const awbRegex = isPhilippinesToUAE
+    ? /^PH[A-Z]{2}[0-9]{3}[A-Z]{2}[A-Z0-9]{8}$/
+    : /^AE[A-Z]{2}[0-9]{3}[A-Z]{2}[A-Z0-9]{8}$/
+  
+  return awbRegex.test(awb)
+}
+
+/**
+ * Generate unique AWB by checking database for duplicates
+ * @param {string} service - Service type
+ * @param {Object} collection - MongoDB collection instance
+ * @param {number} maxAttempts - Maximum number of generation attempts (default: 10)
+ * @returns {Promise<string>} Unique AWB number
+ * @throws {Error} If unable to generate unique AWB after max attempts
+ */
+async function generateUniqueAWB(service, collection, maxAttempts = 10) {
+  let awb
+  let isUnique = false
+  let attempts = 0
+  
+  while (!isUnique && attempts < maxAttempts) {
+    awb = generateAWB(service)
+    
+    // Validate format
+    if (!validateAWBFormat(awb, service)) {
+      console.log(`⚠️  Generated AWB does not match format, retrying... (attempt ${attempts + 1})`)
+      attempts++
+      continue
+    }
+    
+    // Check if AWB already exists in database
+    const existingBooking = await collection.findOne({ awb: awb })
+    if (!existingBooking) {
+      isUnique = true
+    } else {
+      console.log(`⚠️  Duplicate AWB detected: ${awb}, generating new one... (attempt ${attempts + 1})`)
+      attempts++
+    }
+  }
+  
+  if (!isUnique) {
+    throw new Error(`Failed to generate unique AWB after ${maxAttempts} attempts`)
+  }
+  
+  return awb
+}
+
 const app = express()
 const PORT = process.env.PORT || 5000
 
@@ -1335,9 +1468,34 @@ app.post('/api/bookings', async (req, res) => {
     const db = client.db(DB_NAME)
     const collection = db.collection(COLLECTION_NAME)
 
+    // Generate unique AWB before creating booking document
+    console.log(`\n📋 Generating AWB for service: ${service}...`)
+    let awb
+    try {
+      awb = await generateUniqueAWB(service, collection, 10)
+      console.log(`✅ AWB generated successfully: ${awb}`)
+      
+      // Validate AWB format one more time before saving
+      if (!validateAWBFormat(awb, service)) {
+        throw new Error(`Generated AWB ${awb} does not match required format`)
+      }
+    } catch (awbError) {
+      console.error(`\n❌ AWB GENERATION ERROR:`)
+      console.error(`   Error: ${awbError.message}`)
+      console.log(`🔴 Request ID ${requestId} - AWB generation failed`)
+      
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to generate unique AWB. Please try again.',
+        requestId: requestId,
+        details: process.env.NODE_ENV === 'development' ? awbError.message : undefined
+      })
+    }
+
     // Prepare booking document with all detailed fields
     const bookingDocument = {
       referenceNumber: referenceNumber,
+      awb: awb, // Add AWB to booking document
       service: service,
       
       // Sender Details - Complete breakdown
@@ -1471,6 +1629,7 @@ app.post('/api/bookings', async (req, res) => {
     // Insert into MongoDB
     console.log(`\n💾 Inserting booking document into MongoDB...`)
     console.log(`   Reference Number: ${referenceNumber}`)
+    console.log(`   AWB: ${awb}`)
     console.log(`\n📄 Identity Documents being saved:`)
     console.log(`   - eidFrontImage: ${bookingDocument.identityDocuments.eidFrontImage ? 'Present (' + bookingDocument.identityDocuments.eidFrontImage.length + ' chars)' : 'null'}`)
     console.log(`   - eidBackImage: ${bookingDocument.identityDocuments.eidBackImage ? 'Present (' + bookingDocument.identityDocuments.eidBackImage.length + ' chars)' : 'null'}`)
@@ -1513,6 +1672,7 @@ app.post('/api/bookings', async (req, res) => {
 
     console.log('\n📦 New Booking Created:')
     console.log(`   Reference: ${referenceNumber}`)
+    console.log(`   AWB: ${awb}`)
     console.log(`   ID: ${result.insertedId}`)
     console.log(`   Service: ${bookingDocument.service}`)
     console.log(`   From: ${bookingDocument.sender.fullName}${bookingDocument.sender.emailAddress ? ` (${bookingDocument.sender.emailAddress})` : ''}`)
@@ -1531,6 +1691,7 @@ app.post('/api/bookings', async (req, res) => {
     const response = {
       success: true,
       referenceNumber: referenceNumber,
+      awb: awb, // Include AWB in response
       bookingId: result.insertedId,
       message: 'Booking submitted successfully',
       timestamp: new Date().toISOString(),
