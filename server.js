@@ -1020,17 +1020,14 @@ app.post('/api/bookings', async (req, res) => {
         })
       }
 
-      // If insured is true, declaredAmount must be provided and valid
+      // If insured is true, default declaredAmount to 0 if not provided or invalid
       if (bookingData.sender.insured === true) {
-        if (bookingData.sender.declaredAmount === undefined || bookingData.sender.declaredAmount === null) {
-          console.log(`\n❌ VALIDATION ERROR: declaredAmount is required when insured is true`)
-          console.log(`🔴 Request ID ${requestId} - Validation failed: declaredAmount missing`)
-          
-          return res.status(400).json({
-            success: false,
-            error: 'declaredAmount is required when insured is true',
-            requestId: requestId
-          })
+        // Default to 0 if declaredAmount is missing, null, undefined, or 0
+        if (bookingData.sender.declaredAmount === undefined || 
+            bookingData.sender.declaredAmount === null || 
+            bookingData.sender.declaredAmount === 0) {
+          bookingData.sender.declaredAmount = 0
+          console.log(`\nℹ️  declaredAmount not provided or is 0, defaulting to 0 for insured booking`)
         }
 
         // Validate declaredAmount is a number
@@ -1047,16 +1044,16 @@ app.post('/api/bookings', async (req, res) => {
           })
         }
 
-        // Validate declaredAmount range (0.01 to 1,000,000)
-        if (bookingData.sender.declaredAmount < 0.01 || bookingData.sender.declaredAmount > 1000000) {
+        // Validate declaredAmount range (0 to 1,000,000) - allow 0 as valid value
+        if (bookingData.sender.declaredAmount < 0 || bookingData.sender.declaredAmount > 1000000) {
           console.log(`\n❌ VALIDATION ERROR: declaredAmount out of range`)
           console.log(`   Declared Amount: ${bookingData.sender.declaredAmount}`)
-          console.log(`   Valid range: 0.01 to 1,000,000`)
+          console.log(`   Valid range: 0 to 1,000,000`)
           console.log(`🔴 Request ID ${requestId} - Validation failed: declaredAmount out of range`)
           
           return res.status(400).json({
             success: false,
-            error: 'declaredAmount must be between 0.01 and 1,000,000',
+            error: 'declaredAmount must be between 0 and 1,000,000',
             requestId: requestId
           })
         }
@@ -1477,8 +1474,9 @@ app.post('/api/bookings', async (req, res) => {
         // Insurance Fields (only for uae-to-pinas service)
         ...(!isPhilippinesToUAE && bookingData.sender.insured !== undefined ? {
           insured: bookingData.sender.insured,
-          ...(bookingData.sender.insured === true && bookingData.sender.declaredAmount !== undefined && bookingData.sender.declaredAmount !== null ? {
-            declaredAmount: bookingData.sender.declaredAmount
+          // When insured is true, always include declaredAmount (defaults to 0 if not provided)
+          ...(bookingData.sender.insured === true ? {
+            declaredAmount: bookingData.sender.declaredAmount ?? 0
           } : {})
         } : {})
       },
