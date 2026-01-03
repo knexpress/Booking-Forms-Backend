@@ -573,35 +573,40 @@ app.post('/api/otp/generate', async (req, res) => {
     console.log(`🔐 Generated OTP: ${otp}`)
     console.log(`⏰ Expires at: ${expiryDate.toISOString()}`)
 
-    // Send OTP via SMS
-    let smsResult = null
-    try {
-      smsResult = await sendOTP(formattedPhone, otp)
-      console.log(`✅ OTP sent successfully`)
-    } catch (smsError) {
-      console.error(`❌ Failed to send OTP: ${smsError.message}`)
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to send OTP. Please try again.',
-        requestId: requestId,
-        details: process.env.NODE_ENV === 'development' ? smsError.message : undefined
-      })
-    }
-
-    // Store OTP in MongoDB
+    // Connect to MongoDB first (before sending SMS)
     let client
     try {
       client = await connectToDatabase()
-      const db = client.db(DB_NAME)
-      const otpCollection = db.collection(OTP_COLLECTION_NAME)
+    } catch (dbError) {
+      console.error(`❌ Database connection error: ${dbError.message}`)
+      return res.status(500).json({
+        success: false,
+        error: 'Database connection failed',
+        requestId: requestId
+      })
+    }
 
-      // Delete any existing OTPs for this phone number
+    const db = client.db(DB_NAME)
+    const otpCollection = db.collection(OTP_COLLECTION_NAME)
+
+    // Delete any existing OTPs for this phone number (before sending new one)
+    try {
       await otpCollection.deleteMany({ 
         phoneNumber: formattedPhone,
         verified: false 
       })
+    } catch (deleteError) {
+      console.error(`⚠️  Warning: Failed to delete existing OTPs: ${deleteError.message}`)
+      // Continue anyway - we'll still store the new OTP
+    }
 
-      // Store new OTP
+    // Send OTP via SMS (SMSALA)
+    let smsResult = null
+    try {
+      smsResult = await sendOTP(formattedPhone, otp)
+      console.log(`✅ OTP sent successfully via SMSALA`)
+      
+      // Store OTP in MongoDB IMMEDIATELY after SMSALA confirms SMS was sent
       const otpDocument = {
         phoneNumber: formattedPhone,
         otp: otp,
@@ -609,15 +614,27 @@ app.post('/api/otp/generate', async (req, res) => {
         expiresAt: expiryDate,
         verified: false,
         attempts: 0,
-        maxAttempts: otpConfig.maxAttempts
+        maxAttempts: otpConfig.maxAttempts,
+        smsSent: true,
+        smsSentAt: new Date(),
+        smsalaMessageId: smsResult.messageId || null
       }
 
       await otpCollection.insertOne(otpDocument)
-      console.log(`💾 OTP stored in database`)
+      console.log(`💾 OTP stored in database immediately after SMSALA confirmation`)
+      console.log(`   SMSALA Message ID: ${smsResult.messageId || 'N/A'}`)
 
-    } catch (dbError) {
-      console.error(`❌ Database error: ${dbError.message}`)
-      // Don't fail the request if DB fails, OTP was already sent
+    } catch (smsError) {
+      console.error(`❌ Failed to send OTP via SMSALA: ${smsError.message}`)
+      
+      // Even if SMS fails, we might want to store OTP for retry scenarios
+      // But for now, we'll return error since SMS is required
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to send OTP. Please try again.',
+        requestId: requestId,
+        details: process.env.NODE_ENV === 'development' ? smsError.message : undefined
+      })
     }
 
     return res.status(200).json({
@@ -1070,120 +1087,125 @@ app.post('/api/bookings', async (req, res) => {
     
     console.log(`\n✅ All validations passed`)
 
-    // OTP Verification (if phone number and OTP are provided)
-    let verifiedOTP = null // Store the verified OTP value to save in booking
-    if (bookingData.otpPhoneNumber && bookingData.otp) {
-      console.log(`\n🔐 Starting OTP verification...`)
-      console.log(`   Phone Number: ${bookingData.otpPhoneNumber}`)
+    // OTP Verification - MANDATORY for all bookings
+    // Validate that OTP fields are provided
+    if (!bookingData.otpPhoneNumber || !bookingData.otp) {
+      console.log(`\n❌ VALIDATION ERROR: OTP verification is required`)
+      console.log(`   otpPhoneNumber: ${bookingData.otpPhoneNumber ? 'provided' : 'missing'}`)
+      console.log(`   otp: ${bookingData.otp ? 'provided' : 'missing'}`)
+      console.log(`🔴 Request ID ${requestId} - Validation failed: OTP verification is mandatory`)
       
-      try {
-        // Connect to MongoDB to verify OTP
-        let client
-        try {
-          client = await connectToDatabase()
-        } catch (dbError) {
-          console.error(`❌ Database connection error: ${dbError.message}`)
-          return res.status(500).json({
-            success: false,
-            error: 'Database connection failed',
-            requestId: requestId
-          })
-        }
-
-        const db = client.db(DB_NAME)
-        const otpCollection = db.collection(OTP_COLLECTION_NAME)
-
-        // Format phone number
-        const formattedPhone = bookingData.otpPhoneNumber.trim().replace(/\s+/g, '')
-        const providedOTP = bookingData.otp.trim()
-
-        // Find OTP record
-        const otpRecord = await otpCollection.findOne({
-          phoneNumber: formattedPhone,
-          verified: false
-        })
-
-        if (!otpRecord) {
-          console.log(`❌ No OTP found for phone number`)
-          return res.status(400).json({
-            success: false,
-            error: 'No OTP found for this phone number. Please generate and verify OTP first.',
-            requestId: requestId
-          })
-        }
-
-        // Check if OTP is expired
-        if (isOTPExpired(otpRecord.expiresAt)) {
-          console.log(`❌ OTP expired`)
-          await otpCollection.deleteOne({ _id: otpRecord._id })
-          return res.status(400).json({
-            success: false,
-            error: 'OTP has expired. Please generate a new OTP.',
-            requestId: requestId
-          })
-        }
-
-        // Check if max attempts exceeded
-        if (otpRecord.attempts >= otpRecord.maxAttempts) {
-          console.log(`❌ Max attempts exceeded`)
-          await otpCollection.deleteOne({ _id: otpRecord._id })
-          return res.status(400).json({
-            success: false,
-            error: 'Maximum verification attempts exceeded. Please generate a new OTP.',
-            requestId: requestId
-          })
-        }
-
-        // Verify OTP
-        if (otpRecord.otp !== providedOTP) {
-          console.log(`❌ OTP mismatch`)
-          await otpCollection.updateOne(
-            { _id: otpRecord._id },
-            { $inc: { attempts: 1 } }
-          )
-          const updatedRecord = await otpCollection.findOne({ _id: otpRecord._id })
-          const remainingAttempts = updatedRecord.maxAttempts - updatedRecord.attempts
-          
-          return res.status(400).json({
-            success: false,
-            error: 'Invalid OTP',
-            remainingAttempts: remainingAttempts > 0 ? remainingAttempts : 0,
-            requestId: requestId
-          })
-        }
-
-        // Store the verified OTP value to save in booking
-        verifiedOTP = otpRecord.otp
-
-        // Mark OTP as verified
-        await otpCollection.updateOne(
-          { _id: otpRecord._id },
-          { 
-            $set: { 
-              verified: true,
-              verifiedAt: new Date()
-            } 
-          }
-        )
-
-        console.log(`✅ OTP verified successfully`)
-        console.log(`   OTP value will be saved in booking: ${verifiedOTP}`)
-      } catch (otpError) {
-        console.error(`❌ OTP verification error: ${otpError.message}`)
-        return res.status(500).json({
-          success: false,
-          error: 'Failed to verify OTP',
-          requestId: requestId,
-          details: process.env.NODE_ENV === 'development' ? otpError.message : undefined
-        })
-      }
-    } else if (bookingData.otpPhoneNumber || bookingData.otp) {
-      // If one is provided but not both
-      console.log(`⚠️  OTP verification requested but incomplete data`)
       return res.status(400).json({
         success: false,
-        error: 'Both phone number and OTP are required for verification',
+        error: 'OTP verification is required. Please provide both phone number and OTP.',
         requestId: requestId
+      })
+    }
+
+    // OTP Verification - Required for all bookings
+    let verifiedOTP = null // Store the verified OTP value to save in booking
+    console.log(`\n🔐 Starting OTP verification (MANDATORY)...`)
+    console.log(`   Phone Number: ${bookingData.otpPhoneNumber}`)
+    
+    try {
+      // Connect to MongoDB to verify OTP
+      let client
+      try {
+        client = await connectToDatabase()
+      } catch (dbError) {
+        console.error(`❌ Database connection error: ${dbError.message}`)
+        return res.status(500).json({
+          success: false,
+          error: 'Database connection failed',
+          requestId: requestId
+        })
+      }
+
+      const db = client.db(DB_NAME)
+      const otpCollection = db.collection(OTP_COLLECTION_NAME)
+
+      // Format phone number
+      const formattedPhone = bookingData.otpPhoneNumber.trim().replace(/\s+/g, '')
+      const providedOTP = bookingData.otp.trim()
+
+      // Find OTP record
+      const otpRecord = await otpCollection.findOne({
+        phoneNumber: formattedPhone,
+        verified: false
+      })
+
+      if (!otpRecord) {
+        console.log(`❌ No OTP found for phone number`)
+        return res.status(400).json({
+          success: false,
+          error: 'No OTP found for this phone number. Please generate and verify OTP first.',
+          requestId: requestId
+        })
+      }
+
+      // Check if OTP is expired
+      if (isOTPExpired(otpRecord.expiresAt)) {
+        console.log(`❌ OTP expired`)
+        await otpCollection.deleteOne({ _id: otpRecord._id })
+        return res.status(400).json({
+          success: false,
+          error: 'OTP has expired. Please generate a new OTP.',
+          requestId: requestId
+        })
+      }
+
+      // Check if max attempts exceeded
+      if (otpRecord.attempts >= otpRecord.maxAttempts) {
+        console.log(`❌ Max attempts exceeded`)
+        await otpCollection.deleteOne({ _id: otpRecord._id })
+        return res.status(400).json({
+          success: false,
+          error: 'Maximum verification attempts exceeded. Please generate a new OTP.',
+          requestId: requestId
+        })
+      }
+
+      // Verify OTP
+      if (otpRecord.otp !== providedOTP) {
+        console.log(`❌ OTP mismatch`)
+        await otpCollection.updateOne(
+          { _id: otpRecord._id },
+          { $inc: { attempts: 1 } }
+        )
+        const updatedRecord = await otpCollection.findOne({ _id: otpRecord._id })
+        const remainingAttempts = updatedRecord.maxAttempts - updatedRecord.attempts
+        
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid OTP',
+          remainingAttempts: remainingAttempts > 0 ? remainingAttempts : 0,
+          requestId: requestId
+        })
+      }
+
+      // Store the verified OTP value to save in booking
+      verifiedOTP = otpRecord.otp
+
+      // Mark OTP as verified
+      await otpCollection.updateOne(
+        { _id: otpRecord._id },
+        { 
+          $set: { 
+            verified: true,
+            verifiedAt: new Date()
+          } 
+        }
+      )
+
+      console.log(`✅ OTP verified successfully`)
+      console.log(`   OTP value will be saved in booking: ${verifiedOTP}`)
+    } catch (otpError) {
+      console.error(`❌ OTP verification error: ${otpError.message}`)
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to verify OTP',
+        requestId: requestId,
+        details: process.env.NODE_ENV === 'development' ? otpError.message : undefined
       })
     }
 
@@ -1540,8 +1562,8 @@ app.post('/api/bookings', async (req, res) => {
         }
       } : {}),
       
-      // OTP Verification Status
-      ...(bookingData.otpPhoneNumber && bookingData.otp && verifiedOTP ? {
+      // OTP Verification Status (mandatory - always included if booking reaches this point)
+      ...(verifiedOTP ? {
         otpVerification: {
           phoneNumber: bookingData.otpPhoneNumber.trim().replace(/\s+/g, ''),
           otp: verifiedOTP, // Save the actual OTP value in booking
