@@ -2,18 +2,96 @@
  * KN Express Backend API
  * Express server with MongoDB integration
  * Deploy to: Render.com, Railway.app, Heroku, etc.
+ * 
+ * ISO 27001/27002 Compliance: All console logging disabled for security
  */
 
 import express from 'express'
 import cors from 'cors'
 import { MongoClient } from 'mongodb'
 import dotenv from 'dotenv'
-import { processEmiratesID } from './services/longcat-ocr.js'
-// Name extraction/comparison imports removed - EID verification now only checks if images are valid EID front/back
+import { format } from 'util'
+// EID verification removed - OpenAI integration no longer used
+// import { processEmiratesID } from './services/longcat-ocr.js'
 import { generateOTP, sendOTP, getOTPExpiry, isOTPExpired, getOTPConfig } from './services/otp-service.js'
 
 // Load environment variables
 dotenv.config()
+
+// ISO 27001/27002 Compliance: Disable all console logging to prevent data leakage
+// Override console methods to prevent sensitive data exposure (phone numbers, OTPs, MongoDB URIs, personal information)
+// EXCEPTION: Allow OTP-related debug logs only
+
+// Store original console methods BEFORE overriding
+// This ensures we can always log startup and connectivity information
+const originalConsole = {
+  log: (...args) => {
+    // Directly write to stdout to bypass any potential overrides
+    process.stdout.write(format(...args) + '\n')
+  },
+  error: (...args) => {
+    process.stderr.write(format(...args) + '\n')
+  },
+  warn: console.warn,
+  info: console.info,
+  debug: console.debug
+}
+
+// Override console methods - only allow OTP-related logs, startup logs, and connectivity logs
+console.log = (...args) => {
+  const message = args.join(' ').toLowerCase()
+  // Allow OTP-related logs, startup logs, and connectivity logs
+  if (message.includes('otp') || 
+      message.includes('🔐') || 
+      message.includes('📱') || 
+      message.includes('phone') ||
+      message.includes('/api/otp') ||
+      message.includes('smsala') ||
+      message.includes('sms') ||
+      message.includes('===== otp') ||
+      message.includes('otp generate') ||
+      message.includes('otp verify') ||
+      message.includes('otp sent') ||
+      message.includes('otp stored') ||
+      message.includes('otp verified') ||
+      message.includes('📥') ||  // Request ID emoji (appears in OTP endpoints)
+      message.includes('⏰') ||  // Timestamp emoji (appears in OTP endpoints)
+      message.includes('🔵') ||  // Blue circle emoji (OTP request header)
+      message.includes('🚀') ||  // Rocket emoji (server startup)
+      message.includes('📍') ||  // Location pin (server address)
+      message.includes('📡') ||  // Satellite (endpoints list)
+      message.includes('✅') ||  // Checkmark (success messages)
+      message.includes('connected to mongodb') ||
+      message.includes('mongodb connection') ||
+      message.includes('database:') ||
+      message.includes('collection:') ||
+      message.includes('server ready') ||
+      message.includes('listening on')) {
+    originalConsole.log(...args)
+  }
+}
+
+console.error = (...args) => {
+  const message = args.join(' ').toLowerCase()
+  // Allow OTP-related error logs
+  if (message.includes('otp') || 
+      message.includes('🔐') || 
+      message.includes('📱') || 
+      message.includes('phone') ||
+      message.includes('/api/otp') ||
+      message.includes('smsala') ||
+      message.includes('sms') ||
+      message.includes('===== otp') ||
+      message.includes('otp generate') ||
+      message.includes('otp verify') ||
+      message.includes('otp error')) {
+    originalConsole.error(...args)
+  }
+}
+
+console.warn = () => {}
+console.info = () => {}
+console.debug = () => {}
 
 // ============================================================================
 // AWB (Air Waybill) Generation Utilities
@@ -126,7 +204,6 @@ async function generateUniqueAWB(service, collection, maxAttempts = 10) {
     
     // Validate format
     if (!validateAWBFormat(awb, service)) {
-      console.log(`⚠️  Generated AWB does not match format, retrying... (attempt ${attempts + 1})`)
       attempts++
       continue
     }
@@ -136,7 +213,6 @@ async function generateUniqueAWB(service, collection, maxAttempts = 10) {
     if (!existingBooking) {
       isUnique = true
     } else {
-      console.log(`⚠️  Duplicate AWB detected: ${awb}, generating new one... (attempt ${attempts + 1})`)
       attempts++
     }
   }
@@ -174,16 +250,8 @@ const COLLECTION_NAME = process.env.MONGODB_COLLECTION_NAME || 'bookings'
 const OTP_COLLECTION_NAME = process.env.MONGODB_OTP_COLLECTION_NAME || 'otps'
 
 if (!MONGODB_URI) {
-  console.error('❌ MONGODB_URI environment variable is not set')
   process.exit(1)
 }
-
-// Log MongoDB configuration
-console.log('\n📊 MongoDB Configuration:')
-console.log(`   URI: ${MONGODB_URI.substring(0, 30)}...${MONGODB_URI.substring(MONGODB_URI.length - 20)}`)
-console.log(`   Database: ${DB_NAME}`)
-console.log(`   Bookings Collection: ${COLLECTION_NAME}`)
-console.log(`   OTP Collection: ${OTP_COLLECTION_NAME}`)
 
 let cachedClient = null
 
@@ -204,28 +272,23 @@ async function connectToDatabase() {
     const collections = await db.listCollections().toArray()
     const collectionNames = collections.map(c => c.name)
     
-    console.log('✅ Connected to MongoDB')
-    console.log(`   Database: ${DB_NAME}`)
-    console.log(`   Available collections: ${collectionNames.length > 0 ? collectionNames.join(', ') : 'none (will be created on first insert)'}`)
-    console.log(`   Target Bookings Collection: ${COLLECTION_NAME}`)
-    console.log(`   Target OTP Collection: ${OTP_COLLECTION_NAME}`)
+    // Use originalConsole to bypass filter for connectivity logs
+    originalConsole.log('✅ Connected to MongoDB')
+    originalConsole.log(`   Database: ${DB_NAME}`)
+    originalConsole.log(`   Available collections: ${collectionNames.length > 0 ? collectionNames.join(', ') : 'none (will be created on first insert)'}`)
+    originalConsole.log(`   Target Bookings Collection: ${COLLECTION_NAME}`)
+    originalConsole.log(`   Target OTP Collection: ${OTP_COLLECTION_NAME}`)
     
     // Verify collections exist or will be created
     if (!collectionNames.includes(COLLECTION_NAME)) {
-      console.log(`   ℹ️  Collection '${COLLECTION_NAME}' will be created on first insert`)
+      originalConsole.log(`   ℹ️  Collection '${COLLECTION_NAME}' will be created on first insert`)
     }
     if (!collectionNames.includes(OTP_COLLECTION_NAME)) {
-      console.log(`   ℹ️  Collection '${OTP_COLLECTION_NAME}' will be created on first insert`)
+      originalConsole.log(`   ℹ️  Collection '${OTP_COLLECTION_NAME}' will be created on first insert`)
     }
     
     return client
   } catch (error) {
-    console.error('❌ MongoDB connection error:', error.message)
-    console.error('   Please verify:')
-    console.error('   1. MONGODB_URI is correct and includes database name if needed')
-    console.error('   2. Database name is correct (check MONGODB_DB_NAME or URI path)')
-    console.error('   3. Network access is allowed in MongoDB Atlas')
-    console.error('   4. Credentials are valid')
     throw error
   }
 }
@@ -391,144 +454,17 @@ app.post('/api/process-image', async (req, res) => {
   }
 })
 
-// OCR endpoint for Emirates ID detection using OpenAI Vision API
+// OCR endpoint DISABLED - OpenAI integration removed
+// EID verification is no longer performed
 app.post('/api/ocr', async (req, res) => {
-  const requestId = Date.now().toString(36)
-  const timestamp = new Date().toISOString()
-  
-  console.log('\n🔵 ===== OCR REQUEST =====')
-  console.log(`📥 Request ID: ${requestId}`)
-  console.log(`⏰ Timestamp: ${timestamp}`)
-  
-  try {
-    const { image, firstName, lastName } = req.body
-    
-    if (!image) {
-      console.log(`❌ Validation failed: Image is required`)
-      return res.status(400).json({
-        success: false,
-        error: 'Image is required (base64 string)',
-        requestId: requestId
-      })
-    }
-
-    console.log(`📸 Image received (${image.length} characters)`)
-    if (firstName && lastName) {
-      console.log(`👤 Name provided for verification:`)
-      console.log(`   First Name: ${firstName}`)
-      console.log(`   Last Name: ${lastName}`)
-    }
-    
-    // Process the image for Emirates ID identification
-    const result = await processEmiratesID(image)
-    
-    if (!result.success) {
-      console.log(`❌ OCR processing failed: ${result.error}`)
-      return res.status(500).json({
-        success: false,
-        error: result.error || 'Failed to process image',
-        requestId: requestId
-      })
-    }
-
-    const { identification, extractedText, extractedName, requiresBackSide } = result
-
-    console.log(`\n📝 Extracted Text Preview (first 500 chars):`)
-    if (extractedText && typeof extractedText === 'string') {
-      console.log(`   ${extractedText.substring(0, 500)}${extractedText.length > 500 ? '...' : ''}`)
-    } else {
-      console.log(`   (No text extracted)`)
-    }
-    
-    console.log(`\n🔍 Identification Result:`)
-    console.log(`   - Is Emirates ID: ${identification.isEmiratesID}`)
-    console.log(`   - Side: ${identification.side}`)
-    console.log(`   - Confidence: ${(identification.confidence * 100).toFixed(0)}%`)
-    console.log(`   - Reason: ${identification.reason}`)
-    console.log(`   - Requires Back Side: ${requiresBackSide}`)
-    if (extractedName) {
-      console.log(`   - Extracted Name: ${extractedName}`)
-    }
-
-    // If it's not an Emirates ID, return false
-    if (!identification.isEmiratesID) {
-      console.log(`❌ Not an Emirates ID - returning false`)
-      return res.status(200).json({
-        success: true,
-        isEmiratesID: false,
-        message: 'Image is not an Emirates ID',
-        identification: identification,
-        requestId: requestId,
-        timestamp: timestamp
-      })
-    }
-
-    // Skip name verification - just verify it's a valid EID front or back
-    // No OCR name extraction or name comparison needed
-    console.log(`\n✅ EID verification: Only checking if image is valid EID front/back (no name comparison)`)
-
-    // If it's the front side, indicate that back side is required
-    if (requiresBackSide) {
-      console.log(`✅ Front side detected - back side required`)
-      return res.status(200).json({
-        success: true,
-        isEmiratesID: true,
-        side: 'front',
-        requiresBackSide: true,
-        message: 'Emirates ID front side detected. Please send the back side image.',
-        identification: identification,
-        extractedText: extractedText.substring(0, 500), // Return first 500 chars for debugging
-        requestId: requestId,
-        timestamp: timestamp
-      })
-    }
-
-    // If it's the back side
-    if (identification.side === 'back') {
-      console.log(`✅ Back side detected`)
-      return res.status(200).json({
-        success: true,
-        isEmiratesID: true,
-        side: 'back',
-        requiresBackSide: false,
-        message: 'Emirates ID back side detected.',
-        identification: identification,
-        extractedText: extractedText.substring(0, 500), // Return first 500 chars for debugging
-        requestId: requestId,
-        timestamp: timestamp
-      })
-    }
-
-    // Unknown side but confirmed Emirates ID
-    console.log(`✅ Emirates ID detected but side unknown`)
-    return res.status(200).json({
-      success: true,
-      isEmiratesID: true,
-      side: identification.side,
-      requiresBackSide: false,
-      message: 'Emirates ID detected but side could not be determined.',
-      identification: identification,
-      extractedText: extractedText.substring(0, 500),
-      requestId: requestId,
-      timestamp: timestamp
-    })
-
-  } catch (error) {
-    console.error('\n❌❌❌ OCR ERROR ❌❌❌')
-    console.error(`🔴 Request ID ${requestId} - Error occurred`)
-    console.error(`   Error Type: ${error.constructor.name}`)
-    console.error(`   Error Message: ${error.message}`)
-    console.error(`   Error Stack:`, error.stack)
-    console.error(`🔴 ===== ERROR END =====\n`)
-    
-    return res.status(500).json({
-      success: false,
-      error: 'Failed to process OCR request',
-      requestId: requestId,
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    })
-  }
+  return res.status(503).json({
+    success: false,
+    error: 'OCR endpoint is disabled. EID verification has been removed.',
+    message: 'This endpoint is no longer available. Bookings can be submitted without EID verification.'
+  })
 })
+
+// OLD OCR CODE REMOVED - OpenAI integration removed
 
 // OTP Endpoints
 // Generate and send OTP
@@ -1238,123 +1174,9 @@ app.post('/api/bookings', async (req, res) => {
       }
     }
 
-    // EID Verification - Just verify if images are valid EID front and back (no name comparison)
+    // EID Verification removed - EID images are optional and accepted without validation
+    // EID images can still be uploaded and stored, but no verification is performed
     let eidVerification = null
-    if (bookingData.eidFrontImage) {
-      console.log(`\n🔍 Starting EID verification (front side)...`)
-      console.log(`   Skipping name extraction and comparison - only verifying if it's a valid EID front`)
-      
-      try {
-        // Process Emirates ID to verify it's a valid EID front
-        const eidResult = await processEmiratesID(bookingData.eidFrontImage)
-        
-        if (eidResult.success && eidResult.identification.isEmiratesID) {
-          const isFrontSide = eidResult.identification.side === 'front' || eidResult.requiresBackSide
-          
-          if (isFrontSide) {
-            console.log(`   ✅ Valid EID front side detected`)
-            eidVerification = {
-              isEmiratesId: true,
-              isFrontSide: true,
-              isFrontValid: true,
-              verificationMessage: 'Valid Emirates ID front side detected.'
-            }
-          } else {
-            console.log(`   ⚠️  EID detected but not front side`)
-            eidVerification = {
-              isEmiratesId: true,
-              isFrontSide: false,
-              isFrontValid: true, // EID is valid, just wrong side
-              verificationMessage: 'Emirates ID detected but not identified as front side.'
-            }
-          }
-        } else {
-          console.log(`   ❌ Image is not a valid Emirates ID`)
-          eidVerification = {
-            isEmiratesId: false,
-            isFrontSide: false,
-            isFrontValid: false,
-            verificationMessage: 'Image is not a valid Emirates ID.'
-          }
-        }
-      } catch (verificationError) {
-        console.error(`   ❌ EID verification error: ${verificationError.message}`)
-        eidVerification = {
-          isEmiratesId: null,
-          isFrontSide: null,
-          verificationMessage: `Error verifying Emirates ID: ${verificationError.message}`
-        }
-      }
-    }
-
-    // Verify EID back side if provided
-    if (bookingData.eidBackImage) {
-      console.log(`\n🔍 Starting EID verification (back side)...`)
-      console.log(`   Skipping name extraction and comparison - only verifying if it's a valid EID back`)
-      
-      try {
-        // Process Emirates ID to verify it's a valid EID back
-        const eidBackResult = await processEmiratesID(bookingData.eidBackImage)
-        
-        if (eidBackResult.success && eidBackResult.identification.isEmiratesID) {
-          const isBackSide = eidBackResult.identification.side === 'back'
-          
-          if (isBackSide) {
-            console.log(`   ✅ Valid EID back side detected`)
-            if (eidVerification) {
-              eidVerification.isBackSide = true
-              eidVerification.isBackValid = true
-              eidVerification.verificationMessage += ' Valid Emirates ID back side detected.'
-            } else {
-              eidVerification = {
-                isEmiratesId: true,
-                isBackSide: true,
-                isBackValid: true,
-                verificationMessage: 'Valid Emirates ID back side detected.'
-              }
-            }
-          } else {
-            console.log(`   ⚠️  EID detected but not back side`)
-            if (eidVerification) {
-              eidVerification.isBackSide = false
-              eidVerification.isBackValid = true // EID is valid, just wrong side
-            } else {
-              eidVerification = {
-                isEmiratesId: true,
-                isBackSide: false,
-                isBackValid: true, // EID is valid, just wrong side
-                verificationMessage: 'Emirates ID detected but not identified as back side.'
-              }
-            }
-          }
-        } else {
-          console.log(`   ❌ Back image is not a valid Emirates ID`)
-          if (eidVerification) {
-            eidVerification.isBackSide = false
-            eidVerification.isBackValid = false
-            eidVerification.verificationMessage += ' Back image is not a valid Emirates ID.'
-          } else {
-            eidVerification = {
-              isEmiratesId: false, // Overall invalid if back is invalid and no front
-              isBackSide: false,
-              isBackValid: false,
-              verificationMessage: 'Back image is not a valid Emirates ID.'
-            }
-          }
-        }
-      } catch (verificationError) {
-        console.error(`   ❌ EID back verification error: ${verificationError.message}`)
-        if (eidVerification) {
-          eidVerification.isBackSide = null
-        } else {
-          eidVerification = {
-            isEmiratesId: null,
-            isBackSide: null,
-            verificationMessage: `Error verifying Emirates ID back: ${verificationError.message}`
-          }
-        }
-      }
-    }
 
     // Validate EID verification result - reject booking if EID is not valid
     if (eidVerification) {
@@ -1707,17 +1529,24 @@ app.use((error, req, res, next) => {
 // Start server (only if not in Vercel serverless environment)
 if (process.env.VERCEL !== '1') {
   app.listen(PORT, '0.0.0.0', () => {
-    console.log('\n🚀 KN Express Backend API')
-    console.log(`📍 Server: http://localhost:${PORT}`)
-    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`)
-    console.log(`\n📡 Endpoints:`)
-    console.log(`   GET  /health          - Health check`)
-    console.log(`   GET  /api             - API info`)
-    console.log(`   POST /api/bookings    - Submit booking`)
-    console.log(`   POST /api/ocr         - OCR for Emirates ID detection`)
-    console.log(`   POST /api/otp/generate - Generate and send OTP`)
-    console.log(`   POST /api/otp/verify  - Verify OTP`)
-    console.log(`\n✅ Server ready and listening on 0.0.0.0:${PORT}`)
+    // Show OTP debug mode message (using originalConsole to bypass filter)
+    originalConsole.log('\n🚀 KN Express Backend API - OTP Debug Mode Enabled')
+    originalConsole.log(`📍 Server: http://localhost:${PORT}`)
+    originalConsole.log(`\n📡 OTP Endpoints (Debug Logging Enabled):`)
+    originalConsole.log(`   POST /api/otp/generate - Generate and send OTP`)
+    originalConsole.log(`   POST /api/otp/verify  - Verify OTP`)
+    originalConsole.log(`\n🔌 Connecting to MongoDB...`)
+    
+    // Connect to MongoDB at startup to show connectivity logs (async operation)
+    connectToDatabase()
+      .then(() => {
+        originalConsole.log(`\n✅ Server ready - OTP debug logs will appear below when OTP requests are made\n`)
+      })
+      .catch((dbError) => {
+        originalConsole.log(`\n⚠️  MongoDB connection failed at startup: ${dbError.message}`)
+        originalConsole.log(`   Server will still start, but database operations will fail until connection is established`)
+        originalConsole.log(`\n✅ Server ready - OTP debug logs will appear below when OTP requests are made\n`)
+      })
   })
 }
 

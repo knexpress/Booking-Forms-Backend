@@ -1,12 +1,21 @@
 /**
  * OTP Service
  * Handles OTP generation, SMS sending via SMSALA, and verification
+ * 
+ * ISO 27001/27002 Compliance: All console logging disabled for security
  */
 
 import axios from 'axios'
 import dotenv from 'dotenv'
 
 dotenv.config()
+
+// ISO 27001/27002 Compliance: Disable all console logging to prevent data leakage
+console.log = () => {}
+console.error = () => {}
+console.warn = () => {}
+console.info = () => {}
+console.debug = () => {}
 
 // SMSALA Configuration
 const SMSALA_API_TOKEN = process.env.SMSALA_API_TOKEN
@@ -17,11 +26,6 @@ const SMSALA_API_URL = 'https://api2.smsala.com/SendSmsV2'
 const OTP_LENGTH = 6
 const OTP_EXPIRY_MINUTES = 5
 const OTP_MAX_ATTEMPTS = 3
-
-if (!SMSALA_API_TOKEN) {
-  console.warn('⚠️  SMSALA_API_TOKEN not found in environment variables')
-  console.warn('   Please set SMSALA_API_TOKEN in your .env file')
-}
 
 /**
  * Generate a random OTP
