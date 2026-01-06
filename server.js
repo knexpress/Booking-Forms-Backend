@@ -973,14 +973,21 @@ app.post('/api/bookings', async (req, res) => {
         })
       }
 
-      // If insured is true, default declaredAmount to 0 if not provided or invalid
+      // If insured is true, declaredAmount is REQUIRED and must be a positive number
       if (bookingData.sender.insured === true) {
-        // Default to 0 if declaredAmount is missing, null, undefined, or 0
+        // Validate declaredAmount is provided
         if (bookingData.sender.declaredAmount === undefined || 
-            bookingData.sender.declaredAmount === null || 
-            bookingData.sender.declaredAmount === 0) {
-          bookingData.sender.declaredAmount = 0
-          console.log(`\nℹ️  declaredAmount not provided or is 0, defaulting to 0 for insured booking`)
+            bookingData.sender.declaredAmount === null) {
+          console.log(`\n❌ VALIDATION ERROR: declaredAmount is required when insured is true`)
+          console.log(`   Insured: ${bookingData.sender.insured}`)
+          console.log(`   Declared Amount: ${bookingData.sender.declaredAmount}`)
+          console.log(`🔴 Request ID ${requestId} - Validation failed: declaredAmount is required when insured is true`)
+          
+          return res.status(400).json({
+            success: false,
+            error: 'declaredAmount is required and must be a positive number when insured is true',
+            requestId: requestId
+          })
         }
 
         // Validate declaredAmount is a number
@@ -997,24 +1004,38 @@ app.post('/api/bookings', async (req, res) => {
           })
         }
 
-        // Validate declaredAmount range (0 to 1,000,000) - allow 0 as valid value
-        if (bookingData.sender.declaredAmount < 0 || bookingData.sender.declaredAmount > 1000000) {
-          console.log(`\n❌ VALIDATION ERROR: declaredAmount out of range`)
+        // Validate declaredAmount is positive (greater than 0) and within maximum limit
+        if (bookingData.sender.declaredAmount <= 0) {
+          console.log(`\n❌ VALIDATION ERROR: declaredAmount must be a positive number`)
           console.log(`   Declared Amount: ${bookingData.sender.declaredAmount}`)
-          console.log(`   Valid range: 0 to 1,000,000`)
-          console.log(`🔴 Request ID ${requestId} - Validation failed: declaredAmount out of range`)
+          console.log(`🔴 Request ID ${requestId} - Validation failed: declaredAmount must be greater than 0`)
           
           return res.status(400).json({
             success: false,
-            error: 'declaredAmount must be between 0 and 1,000,000',
+            error: 'declaredAmount must be a positive number (greater than 0)',
+            requestId: requestId
+          })
+        }
+
+        if (bookingData.sender.declaredAmount > 1000000) {
+          console.log(`\n❌ VALIDATION ERROR: declaredAmount exceeds maximum limit`)
+          console.log(`   Declared Amount: ${bookingData.sender.declaredAmount}`)
+          console.log(`   Maximum allowed: 1,000,000 AED`)
+          console.log(`🔴 Request ID ${requestId} - Validation failed: declaredAmount exceeds maximum`)
+          
+          return res.status(400).json({
+            success: false,
+            error: 'declaredAmount cannot exceed 1,000,000 AED',
             requestId: requestId
           })
         }
       } else {
-        // If insured is false, declaredAmount should be ignored or null
+        // If insured is false, declaredAmount should be null/undefined
         if (bookingData.sender.declaredAmount !== undefined && bookingData.sender.declaredAmount !== null) {
           console.log(`\n⚠️  WARNING: declaredAmount provided but insured is false - will be ignored`)
         }
+        // Explicitly set to undefined to ensure it's not saved
+        bookingData.sender.declaredAmount = undefined
       }
     } else if (!isUAEToPinas && (bookingData.sender.insured !== undefined || bookingData.sender.declaredAmount !== undefined)) {
       // Insurance fields should not be present for non-uae-to-pinas services
@@ -1318,9 +1339,10 @@ app.post('/api/bookings', async (req, res) => {
         // Insurance Fields (only for uae-to-pinas service)
         ...(!isPhilippinesToUAE && bookingData.sender.insured !== undefined ? {
           insured: bookingData.sender.insured,
-          // When insured is true, always include declaredAmount (defaults to 0 if not provided)
-          ...(bookingData.sender.insured === true ? {
-            declaredAmount: bookingData.sender.declaredAmount ?? 0
+          // When insured is true, include declaredAmount (required and validated above)
+          // When insured is false, declaredAmount is undefined and will not be saved
+          ...(bookingData.sender.insured === true && bookingData.sender.declaredAmount !== undefined ? {
+            declaredAmount: bookingData.sender.declaredAmount
           } : {})
         } : {})
       },
