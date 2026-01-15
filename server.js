@@ -951,91 +951,64 @@ app.post('/api/bookings', async (req, res) => {
       })
     }
 
-    // Validate insurance fields (only for uae-to-pinas service)
+    // Validate shipmentType + insurance fields (only for uae-to-pinas service)
     const service = bookingData.service || 'uae-to-pinas'
     const serviceLower = service.toLowerCase()
     const isUAEToPinas = !serviceLower.includes('philippines-to-uae') && 
                           !serviceLower.includes('pinas-to-uae') &&
                           !serviceLower.includes('ph-to-uae')
     
-    if (isUAEToPinas && bookingData.sender.insured !== undefined) {
-      // Validate insured is a boolean
-      if (typeof bookingData.sender.insured !== 'boolean') {
-        console.log(`\n❌ VALIDATION ERROR: Invalid insured field type`)
-        console.log(`   Insured value: ${bookingData.sender.insured}`)
-        console.log(`   Type: ${typeof bookingData.sender.insured}`)
-        console.log(`🔴 Request ID ${requestId} - Validation failed: insured must be a boolean`)
+    if (isUAEToPinas) {
+      // shipmentType is REQUIRED for UAE -> PH bookings
+      const shipmentType = bookingData.sender?.shipmentType
+      if (shipmentType !== 'document' && shipmentType !== 'non-document') {
+        console.log(`\n❌ VALIDATION ERROR: Invalid or missing shipmentType`)
+        console.log(`   shipmentType: ${shipmentType}`)
+        console.log(`🔴 Request ID ${requestId} - Validation failed: shipmentType must be "document" or "non-document"`)
         
         return res.status(400).json({
           success: false,
-          error: 'insured must be a boolean value',
+          error: 'sender.shipmentType must be "document" or "non-document"',
           requestId: requestId
         })
       }
 
-      // If insured is true, declaredAmount is REQUIRED and must be a positive number
-      if (bookingData.sender.insured === true) {
-        // Validate declaredAmount is provided
-        if (bookingData.sender.declaredAmount === undefined || 
-            bookingData.sender.declaredAmount === null) {
-          console.log(`\n❌ VALIDATION ERROR: declaredAmount is required when insured is true`)
-          console.log(`   Insured: ${bookingData.sender.insured}`)
-          console.log(`   Declared Amount: ${bookingData.sender.declaredAmount}`)
-          console.log(`🔴 Request ID ${requestId} - Validation failed: declaredAmount is required when insured is true`)
+      // Business rules:
+      // - document: force insured=false and declaredAmount=0
+      // - non-document: force insured=true and declaredAmount must be a number > 0 (<= 1,000,000)
+      if (shipmentType === 'document') {
+        bookingData.sender.insured = false
+        bookingData.sender.declaredAmount = 0
+      } else {
+        bookingData.sender.insured = true
+        const amount = Number(bookingData.sender.declaredAmount)
+        if (!Number.isFinite(amount) || amount <= 0) {
+          console.log(`\n❌ VALIDATION ERROR: declaredAmount invalid for non-document shipment`)
+          console.log(`   shipmentType: ${shipmentType}`)
+          console.log(`   declaredAmount: ${bookingData.sender.declaredAmount}`)
+          console.log(`🔴 Request ID ${requestId} - Validation failed: declaredAmount must be a number > 0 for non-document shipments`)
           
           return res.status(400).json({
             success: false,
-            error: 'declaredAmount is required and must be a positive number when insured is true',
+            error: 'sender.declaredAmount must be a number > 0 for non-document shipments',
             requestId: requestId
           })
         }
 
-        // Validate declaredAmount is a number
-        if (typeof bookingData.sender.declaredAmount !== 'number') {
-          console.log(`\n❌ VALIDATION ERROR: Invalid declaredAmount type`)
-          console.log(`   Declared Amount: ${bookingData.sender.declaredAmount}`)
-          console.log(`   Type: ${typeof bookingData.sender.declaredAmount}`)
-          console.log(`🔴 Request ID ${requestId} - Validation failed: declaredAmount must be a number`)
-          
-          return res.status(400).json({
-            success: false,
-            error: 'declaredAmount must be a number',
-            requestId: requestId
-          })
-        }
-
-        // Validate declaredAmount is positive (greater than 0) and within maximum limit
-        if (bookingData.sender.declaredAmount <= 0) {
-          console.log(`\n❌ VALIDATION ERROR: declaredAmount must be a positive number`)
-          console.log(`   Declared Amount: ${bookingData.sender.declaredAmount}`)
-          console.log(`🔴 Request ID ${requestId} - Validation failed: declaredAmount must be greater than 0`)
-          
-          return res.status(400).json({
-            success: false,
-            error: 'declaredAmount must be a positive number (greater than 0)',
-            requestId: requestId
-          })
-        }
-
-        if (bookingData.sender.declaredAmount > 1000000) {
+        if (amount > 1000000) {
           console.log(`\n❌ VALIDATION ERROR: declaredAmount exceeds maximum limit`)
-          console.log(`   Declared Amount: ${bookingData.sender.declaredAmount}`)
+          console.log(`   Declared Amount: ${amount}`)
           console.log(`   Maximum allowed: 1,000,000 AED`)
           console.log(`🔴 Request ID ${requestId} - Validation failed: declaredAmount exceeds maximum`)
           
           return res.status(400).json({
             success: false,
-            error: 'declaredAmount cannot exceed 1,000,000 AED',
+            error: 'sender.declaredAmount cannot exceed 1,000,000 AED',
             requestId: requestId
           })
         }
-      } else {
-        // If insured is false, declaredAmount should be null/undefined
-        if (bookingData.sender.declaredAmount !== undefined && bookingData.sender.declaredAmount !== null) {
-          console.log(`\n⚠️  WARNING: declaredAmount provided but insured is false - will be ignored`)
-        }
-        // Explicitly set to undefined to ensure it's not saved
-        bookingData.sender.declaredAmount = undefined
+
+        bookingData.sender.declaredAmount = amount
       }
     } else if (!isUAEToPinas && (bookingData.sender.insured !== undefined || bookingData.sender.declaredAmount !== undefined)) {
       // Insurance fields should not be present for non-uae-to-pinas services
@@ -1336,14 +1309,11 @@ app.post('/api/bookings', async (req, res) => {
         // Delivery Options
         deliveryOption: bookingData.sender.deliveryOption || 'warehouse',
         
-        // Insurance Fields (only for uae-to-pinas service)
-        ...(!isPhilippinesToUAE && bookingData.sender.insured !== undefined ? {
+        // Shipment Type + Insurance Fields (only for uae-to-pinas service)
+        ...(!isPhilippinesToUAE ? {
+          shipmentType: bookingData.sender.shipmentType,
           insured: bookingData.sender.insured,
-          // When insured is true, include declaredAmount (required and validated above)
-          // When insured is false, declaredAmount is undefined and will not be saved
-          ...(bookingData.sender.insured === true && bookingData.sender.declaredAmount !== undefined ? {
-            declaredAmount: bookingData.sender.declaredAmount
-          } : {})
+          declaredAmount: bookingData.sender.declaredAmount
         } : {})
       },
       
