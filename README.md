@@ -41,10 +41,12 @@ npm start
 Add in Render Dashboard → Environment:
 
 ```
-MONGODB_URI=mongodb+srv://evolutionaiexpert:DinxxfOoqTXN7oh5@aya.uixtazr.mongodb.net/?retryWrites=true&w=majority&appName=AYA
+MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@cluster.mongodb.net/?retryWrites=true&w=majority&appName=APP_NAME
 PORT=5000
 NODE_ENV=production
 ```
+
+**⚠️ IMPORTANT:** Replace `USERNAME`, `PASSWORD`, `cluster`, and `APP_NAME` with your actual MongoDB Atlas credentials from your `.env` file. Never commit real credentials to git.
 
 4. **Deploy!**
 

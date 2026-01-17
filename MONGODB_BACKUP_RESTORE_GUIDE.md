@@ -65,13 +65,14 @@ If you have backup files (`.bson` files from `mongodump`):
 # Download from: https://www.mongodb.com/try/download/database-tools
 
 # Restore from backup directory
-mongorestore --uri="mongodb+srv://aliabdullah:knex22939@finance.gk7t9we.mongodb.net/finance?retryWrites=true&w=majority&appName=Finance" ./backup/finance/
+# ⚠️ IMPORTANT: Use MONGODB_URI from your .env file instead of hardcoded credentials
+mongorestore --uri="${MONGODB_URI}" ./backup/finance/
 
 # Restore specific collection
-mongorestore --uri="mongodb+srv://aliabdullah:knex22939@finance.gk7t9we.mongodb.net/finance?retryWrites=true&w=majority&appName=Finance" --collection=bookings ./backup/finance/bookings.bson
+mongorestore --uri="${MONGODB_URI}" --collection=bookings ./backup/finance/bookings.bson
 
 # Restore to different database
-mongorestore --uri="mongodb+srv://aliabdullah:knex22939@finance.gk7t9we.mongodb.net/finance?retryWrites=true&w=majority&appName=Finance" --nsFrom="finance.*" --nsTo="finance_restored.*" ./backup/finance/
+mongorestore --uri="${MONGODB_URI}" --nsFrom="finance.*" --nsTo="finance_restored.*" ./backup/finance/
 ```
 
 ---
@@ -82,26 +83,28 @@ mongorestore --uri="mongodb+srv://aliabdullah:knex22939@finance.gk7t9we.mongodb.
 
 ```bash
 # Create backup of entire database
-mongodump --uri="mongodb+srv://aliabdullah:knex22939@finance.gk7t9we.mongodb.net/finance?retryWrites=true&w=majority&appName=Finance" --out=./backup/
+# ⚠️ IMPORTANT: Use MONGODB_URI from your .env file instead of hardcoded credentials
+mongodump --uri="${MONGODB_URI}" --out=./backup/
 
 # Create backup of specific collection
-mongodump --uri="mongodb+srv://aliabdullah:knex22939@finance.gk7t9we.mongodb.net/finance?retryWrites=true&w=majority&appName=Finance" --collection=bookings --out=./backup/
+mongodump --uri="${MONGODB_URI}" --collection=bookings --out=./backup/
 
 # Create backup with compression
-mongodump --uri="mongodb+srv://aliabdullah:knex22939@finance.gk7t9we.mongodb.net/finance?retryWrites=true&w=majority&appName=Finance" --gzip --out=./backup/
+mongodump --uri="${MONGODB_URI}" --gzip --out=./backup/
 ```
 
 ### Option 2: Export to JSON (for specific collections)
 
 ```bash
 # Export bookings collection
-mongoexport --uri="mongodb+srv://aliabdullah:knex22939@finance.gk7t9we.mongodb.net/finance?retryWrites=true&w=majority&appName=Finance" --collection=bookings --out=bookings.json
+# ⚠️ IMPORTANT: Use MONGODB_URI from your .env file instead of hardcoded credentials
+mongoexport --uri="${MONGODB_URI}" --collection=bookings --out=bookings.json
 
 # Export otps collection
-mongoexport --uri="mongodb+srv://aliabdullah:knex22939@finance.gk7t9we.mongodb.net/finance?retryWrites=true&w=majority&appName=Finance" --collection=otps --out=otps.json
+mongoexport --uri="${MONGODB_URI}" --collection=otps --out=otps.json
 
 # Export with query filter
-mongoexport --uri="mongodb+srv://aliabdullah:knex22939@finance.gk7t9we.mongodb.net/finance?retryWrites=true&w=majority&appName=Finance" --collection=bookings --query='{"status":"pending"}' --out=bookings_pending.json
+mongoexport --uri="${MONGODB_URI}" --collection=bookings --query='{"status":"pending"}' --out=bookings_pending.json
 ```
 
 ### Option 3: Enable Atlas Automated Backups
